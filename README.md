@@ -4,7 +4,16 @@ A modular desktop toolbox for game masters to prepare and run tabletop RPG sessi
 
 面向跑团主持人的模块化桌面工具箱，用于备团和带团。
 
-> Status: early planning. No application code yet.
+> Status: early development. Desktop shell + layout/multi-window framework in progress.
+
+## Develop (macOS)
+
+Requires Node 22, pnpm 11, Rust (see project docs for setup).
+
+```bash
+pnpm install
+pnpm dev
+```
 
 ## License
 
