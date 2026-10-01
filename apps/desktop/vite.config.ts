@@ -5,7 +5,12 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  resolve: { alias: { "@": path.resolve(import.meta.dirname, "./src") } },
+  resolve: {
+    alias: { "@": path.resolve(import.meta.dirname, "./src") },
+  },
   server: { port: 47231, strictPort: true, host: "127.0.0.1", hmr: false },
   clearScreen: false,
+  optimizeDeps: {
+    exclude: ["@ek-tool/dice", "@ek/tool-api"],
+  },
 });

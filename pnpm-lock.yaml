@@ -13,6 +13,12 @@ importers:
       '@base-ui/react':
         specifier: ^1.8.0
         version: 1.8.0(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      '@ek-tool/dice':
+        specifier: workspace:*
+        version: link:../../toolbox/dice/frontend
+      '@ek/tool-api':
+        specifier: workspace:*
+        version: link:../../packages/tool-api
       '@fontsource-variable/geist':
         specifier: ^5.3.0
         version: 5.3.0
@@ -83,6 +89,46 @@ importers:
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3
+      typescript:
+        specifier: ~6.0.2
+        version: 6.0.3
+      vite:
+        specifier: ^8.3.0
+        version: 8.3.1(@types/node@24.19.0)(jiti@2.7.0)
+
+  packages/tool-api:
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.18
+        version: 19.3.0
+      react:
+        specifier: ^19.2.8
+        version: 19.3.0
+      typescript:
+        specifier: ~6.0.2
+        version: 6.0.3
+
+  toolbox/dice/frontend:
+    dependencies:
+      '@ek/tool-api':
+        specifier: workspace:*
+        version: link:../../../packages/tool-api
+      lucide-react:
+        specifier: ^1.48.0
+        version: 1.49.0(@types/react@19.3.0)(react@19.3.0)
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.18
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: ^19.2.7
+        version: 19.3.0(@types/react@19.3.0)
+      react:
+        specifier: ^19.2.8
+        version: 19.3.0
+      react-dom:
+        specifier: ^19.2.8
+        version: 19.3.0(react@19.3.0)
       typescript:
         specifier: ~6.0.2
         version: 6.0.3

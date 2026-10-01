@@ -35,7 +35,6 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Toaster } from "@/components/ui/sonner";
@@ -51,7 +50,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from "@/components/ui/command";
 import { TOOL_MAP, TOOLS, UNKNOWN_ICON } from "./tools";
-import { appLog, chromeStore, getToolState, setToolState, settingsStore, toolStateStore, useStore } from "./lib/store";
+import { allowedToolsStore, getLoadedTool, getToolError, isAllowed, loadedToolsStore, setAllowed } from "./tools/allowed";
+import { appLog, chromeStore, settingsStore, useStore } from "./lib/store";
 import { t, translate, useL, useT, type I18nKey } from "./lib/i18n";
 
 const kw = (...keys: I18nKey[]) => keys.flatMap((k) => [translate("zh", k), translate("en", k)]).join(" ");
@@ -94,23 +94,36 @@ class PanelErrorBoundary extends Component<{ children: ReactNode }, { error?: Er
 function ToolPanel(props: IDockviewPanelProps<{ toolId: string }>) {
   const tr = useT();
   const l = useL();
-  useStore(toolStateStore);
+  useStore(loadedToolsStore);
+  useStore(allowedToolsStore);
   const toolId = props.params.toolId;
-  const def = TOOL_MAP[toolId];
-  const st = getToolState(toolId);
-  const name = def ? l(def.title) : toolId;
-  if (!def || !st.installed || !st.enabled) {
-    const missing = !def || !st.installed;
+  const catalog = TOOL_MAP[toolId];
+  const loaded = getLoadedTool(toolId);
+  const err = getToolError(toolId);
+  const allowed = isAllowed(toolId);
+  const name = loaded ? l(loaded.title) : catalog ? l(catalog.title) : toolId;
+
+  if (!catalog) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-background p-4 text-center text-foreground" data-placeholder={toolId}>
-        <div className="text-base font-medium">{missing ? tr("ph.missing", { name }) : tr("ph.disabled", { name })}</div>
-        <div className="max-w-xs text-sm text-muted-foreground">{missing ? tr("ph.missingHint") : tr("ph.disabledHint")}</div>
+        <div className="text-base font-medium">{tr("ph.missing", { name })}</div>
+        <div className="max-w-xs text-sm text-muted-foreground">{tr("ph.missingHint")}</div>
+        <Button size="sm" variant="outline" onClick={() => props.api.close()}>
+          {tr("ph.close")}
+        </Button>
+      </div>
+    );
+  }
+
+  if (!allowed) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 bg-background p-4 text-center text-foreground" data-placeholder={toolId}>
+        <div className="text-base font-medium">{tr("ph.disabled", { name })}</div>
+        <div className="max-w-xs text-sm text-muted-foreground">{tr("ph.disabledHint")}</div>
         <div className="flex gap-2">
-          {def && (
-            <Button size="sm" onClick={() => setToolState(toolId, missing ? { installed: true, enabled: true } : { enabled: true })}>
-              {missing ? tr("ph.install") : tr("ph.enable")}
-            </Button>
-          )}
+          <Button size="sm" onClick={() => setAllowed(toolId, true)}>
+            {tr("ph.enable")}
+          </Button>
           <Button size="sm" variant="outline" onClick={() => props.api.close()}>
             {tr("ph.close")}
           </Button>
@@ -118,7 +131,36 @@ function ToolPanel(props: IDockviewPanelProps<{ toolId: string }>) {
       </div>
     );
   }
-  const C = def.component;
+
+  if (err) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 bg-background p-4 text-center text-foreground" data-placeholder={toolId}>
+        <div className="text-base font-medium">{name}</div>
+        <div className="max-w-sm text-sm text-destructive">{err}</div>
+        <Button size="sm" variant="outline" onClick={() => props.api.close()}>
+          {tr("ph.close")}
+        </Button>
+      </div>
+    );
+  }
+
+  if (!loaded) {
+    return (
+      <div className="flex h-full items-center justify-center bg-background p-4 text-sm text-muted-foreground">
+        Loading {name}…
+      </div>
+    );
+  }
+
+  const C = loaded.panels[0]?.component;
+  if (!C) {
+    return (
+      <div className="flex h-full items-center justify-center bg-background p-4 text-sm text-destructive">
+        Tool has no panels
+      </div>
+    );
+  }
+
   return (
     <PanelErrorBoundary>
       <C panelId={toolId} />
@@ -129,12 +171,13 @@ function ToolPanel(props: IDockviewPanelProps<{ toolId: string }>) {
 function Tab(props: IDockviewPanelHeaderProps<{ toolId: string }>) {
   const l = useL();
   const { locked } = useStore(chromeStore);
-  useStore(toolStateStore);
-  const def = TOOL_MAP[props.params.toolId];
-  const Icon = def?.icon ?? UNKNOWN_ICON;
-  const st = getToolState(props.params.toolId);
-  const off = !def || !st.enabled || !st.installed;
-  const title = def ? l(def.title) : props.params.toolId;
+  useStore(loadedToolsStore);
+  useStore(allowedToolsStore);
+  const catalog = TOOL_MAP[props.params.toolId];
+  const loaded = getLoadedTool(props.params.toolId);
+  const Icon = loaded?.icon ?? catalog?.icon ?? UNKNOWN_ICON;
+  const off = !catalog || !isAllowed(props.params.toolId) || !!getToolError(props.params.toolId);
+  const title = loaded ? l(loaded.title) : catalog ? l(catalog.title) : props.params.toolId;
   useEffect(() => {
     if (props.api.title !== title) props.api.setTitle(title);
   }, [title, props.api]);
@@ -237,7 +280,7 @@ function WorkspaceView({ id, visible }: { id: string; visible: boolean }) {
       if (missing.length) appLog(`⚠ ${id}: layout references unknown tools: ${missing.join(", ")}`);
       appLog(`↻ ${id}: layout restored from autosave (${saved.savedAt})`);
     } else {
-      ctrl.buildDefault();
+      await ctrl.buildDefault();
       appLog(`★ ${id}: built-in default layout`);
     }
     ctrl.applyAutoCollapse(liveStore.get().auto);
@@ -269,7 +312,8 @@ function CommandPalette() {
   const l = useL();
   const { paletteOpen, locked, focusMode } = useStore(chromeStore);
   const ws = useStore(workspacesStore);
-  useStore(toolStateStore);
+  useStore(allowedToolsStore);
+  useStore(loadedToolsStore);
   const close = () => chromeStore.set((s) => ({ ...s, paletteOpen: false }));
   const run = (f: () => void) => {
     close();
@@ -287,16 +331,17 @@ function CommandPalette() {
             <CommandList className="max-h-[60vh]">
               <CommandEmpty>{tr("cmd.empty")}</CommandEmpty>
               <CommandGroup heading={tr("cmd.tools")}>
-                {TOOLS.map((tool) => {
-                  const st = getToolState(tool.id);
-                  if (!st.installed) return null;
+                {TOOLS.filter((tool) => isAllowed(tool.id)).map((tool) => {
                   const open = !!ctrl?.panelFor(tool.id);
                   const Icon = tool.icon;
                   return (
-                    <CommandItem key={tool.id} value={`${tool.id} ${tool.title.zh} ${tool.title.en}`} onSelect={() => run(() => ctrl?.openTool(tool.id))}>
+                    <CommandItem
+                      key={tool.id}
+                      value={`${tool.id} ${tool.title.zh} ${tool.title.en}`}
+                      onSelect={() => run(() => void ctrl?.requestOpenTool(tool.id))}
+                    >
                       <Icon />
                       {l(tool.title)}
-                      {!st.enabled && <Badge variant="outline">off</Badge>}
                       <CommandShortcut>{open ? "●" : ""}</CommandShortcut>
                     </CommandItem>
                   );
@@ -334,22 +379,23 @@ function CommandPalette() {
 function ToolManager({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const tr = useT();
   const l = useL();
-  useStore(toolStateStore);
+  useStore(allowedToolsStore);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{tr("tools.manage")}</DialogTitle>
           <DialogDescription>
-            {settingsStore.get().locale === "zh" ? "停用或卸载一个已在布局里的工具，看看占位面板；「理智值」模拟后来安装的新工具。" : "Disable or uninstall a tool that is in the layout to see placeholders; “Sanity” simulates a newly installed tool."}
+            {settingsStore.get().locale === "zh"
+              ? "勾选的工具会出现在命令面板里；取消勾选后，布局里若仍引用会显示占位。"
+              : "Checked tools appear in the command palette; unchecked tools show a placeholder if still in the layout."}
           </DialogDescription>
         </DialogHeader>
-        <div className="grid grid-cols-[1fr_auto_auto] items-center gap-x-4 gap-y-2 text-sm">
+        <div className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-2 text-sm">
           <span />
-          <span className="text-xs text-muted-foreground">{tr("tools.installed")}</span>
           <span className="text-xs text-muted-foreground">{tr("tools.enabled")}</span>
           {TOOLS.map((tool) => {
-            const st = getToolState(tool.id);
+            const on = isAllowed(tool.id);
             const Icon = tool.icon;
             return (
               <div key={tool.id} className="contents">
@@ -357,22 +403,14 @@ function ToolManager({ open, onOpenChange }: { open: boolean; onOpenChange: (o: 
                   <Icon className="size-4" /> {l(tool.title)}
                 </span>
                 <Switch
-                  checked={st.installed}
+                  checked={on}
                   onCheckedChange={(v) => {
-                    setToolState(tool.id, { installed: v });
-                    appLog(`${v ? "📦 install" : "🗑 uninstall"} ${tool.id}`);
+                    setAllowed(tool.id, v);
+                    appLog(`${v ? "✓ allow" : "⏸ disallow"} ${tool.id}`);
                     if (v)
-                      toast(settingsStore.get().locale === "zh" ? `新工具「${l(tool.title)}」可用` : `New tool “${l(tool.title)}” is available`, {
-                        action: { label: settingsStore.get().locale === "zh" ? "打开" : "Open", onClick: () => activeController()?.openTool(tool.id) },
+                      toast(settingsStore.get().locale === "zh" ? `工具「${l(tool.title)}」可用` : `Tool “${l(tool.title)}” is available`, {
+                        action: { label: settingsStore.get().locale === "zh" ? "打开" : "Open", onClick: () => void activeController()?.requestOpenTool(tool.id) },
                       });
-                  }}
-                />
-                <Switch
-                  checked={st.enabled}
-                  disabled={!st.installed}
-                  onCheckedChange={(v) => {
-                    setToolState(tool.id, { enabled: v });
-                    appLog(`${v ? "✓ enable" : "⏸ disable"} ${tool.id}`);
                   }}
                 />
               </div>
@@ -505,7 +543,7 @@ function TopBar({ onTools, onSavePreset }: { onTools: () => void; onSavePreset: 
                   <DropdownMenuItem onClick={() => duplicateWorkspace(w.id)}>
                     <CopyIcon /> {tr("ws.dup")}
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => { getController(w.id).buildDefault(); getController(w.id).saveNow(); }}>{tr("ws.reset")}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => { void getController(w.id).buildDefault().then(() => getController(w.id).saveNow()); }}>{tr("ws.reset")}</DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem variant="destructive" disabled={ws.list.length < 2} onClick={() => deleteWorkspace(w.id)}>
                     {tr("ws.delete")}
@@ -616,7 +654,7 @@ async function resetDefaultLayout() {
   if (!c?.api) return;
   for (const p of [...c.api.getPopouts()]) c.dockBack(p.group);
   await new Promise((r) => setTimeout(r, 300));
-  c.buildDefault();
+  await c.buildDefault();
   c.saveNow();
 }
 

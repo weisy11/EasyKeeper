@@ -1,6 +1,8 @@
 import type { DockviewApi, DockviewGroupPanel, IDockviewPanel, SerializedDockview } from "dockview-react";
 import { toast } from "sonner";
-import { TOOL_MAP, TOOLS, type Region } from "./tools";
+import { CATALOG_MAP, TOOL_MAP, TOOLS, type Region } from "./tools";
+import { getLoadedTool, isAllowed } from "./tools/allowed";
+import { closeTool, ensureToolsLoaded, openTools } from "./tools/loader";
 import { appLog, chromeStore, createStore, settingsStore } from "./lib/store";
 import { t } from "./lib/i18n";
 import { clearPopoutQueue, destroyWindow, focusWindow, log, on, queuePopout, type Box } from "./lib/platform";
@@ -75,6 +77,11 @@ export class WorkspaceController {
   attach(api: DockviewApi) {
     this.api = api;
     api.onDidLayoutChange(() => this.scheduleSave());
+    api.onDidRemovePanel((panel) => {
+      if (this.restoring) return;
+      const toolId = String((panel.params as { toolId?: string } | undefined)?.toolId ?? panel.id);
+      void closeTool(toolId);
+    });
     api.onDidAddPopoutGroup((p) => {
       const label = pendingLabels.get(this.id)?.shift();
       if (label) {
@@ -124,40 +131,64 @@ export class WorkspaceController {
     return this.api.getEdgeGroup(pos)!;
   }
 
-  buildDefault() {
+  async buildDefault() {
     const api = this.api;
     this.restoring = true;
+    for (const p of [...api.panels]) {
+      const toolId = String((p.params as { toolId?: string } | undefined)?.toolId ?? p.id);
+      await closeTool(toolId, { skipReload: true });
+    }
     api.clear();
     for (const pos of EDGES) {
       if (api.getEdgeGroup(pos)) api.removeEdgeGroup(pos);
     }
-    for (const id of ["blank-a", "blank-b"]) this.openTool(id, { focus: false });
     this.userCollapsed = { left: false, right: false, bottom: false };
     this.restoring = false;
+    await openTools(["ek.dice"], this.panelCtx());
     this.applyAutoCollapse(liveStore.get().auto);
     bumpLive();
+  }
+
+  panelCtx() {
+    return {
+      openPanel: (toolId: string, opts?: { focus?: boolean }) => {
+        this.openPanel(toolId, opts);
+      },
+      hasPanel: (toolId: string) => !!this.panelFor(toolId),
+    };
   }
 
   panelFor(toolId: string): IDockviewPanel | undefined {
     return this.api.getPanel(toolId);
   }
 
-  /** Placement engine (sandbox version): reuse → region's existing group as a tab → create region. */
-  openTool(toolId: string, opts: { focus?: boolean } = {}) {
+  /** Async open: load thin entry (+ deps) then place panel. */
+  async requestOpenTool(toolId: string, opts: { focus?: boolean } = {}) {
+    await openTools([toolId], this.panelCtx());
+    if (opts.focus !== false) {
+      const p = this.panelFor(toolId);
+      if (p) this.reveal(p);
+    }
+  }
+
+  /** Placement only (tool must already be loaded). */
+  openPanel(toolId: string, opts: { focus?: boolean } = {}) {
     const existing = this.panelFor(toolId);
     if (existing) {
       this.reveal(existing);
       return existing;
     }
-    const def = TOOL_MAP[toolId];
-    const region: Region = def?.region ?? "center";
+    const loaded = getLoadedTool(toolId);
+    const catalog = CATALOG_MAP[toolId] ?? TOOL_MAP[toolId];
+    const region: Region = loaded?.region ?? "center";
+    const titleSrc = loaded?.title ?? catalog?.title;
     const base = {
       id: toolId,
       component: "tool",
-      title: def ? def.title[settingsStore.get().locale] : toolId,
+      title: titleSrc ? titleSrc[settingsStore.get().locale] : toolId,
       params: { toolId },
-      minimumWidth: def?.minWidth ?? 200,
-      minimumHeight: def?.minHeight ?? 120,
+      minimumWidth: loaded?.minWidth ?? 200,
+      minimumHeight: loaded?.minHeight ?? 120,
       inactive: opts.focus === false,
     };
     let panel: IDockviewPanel;
@@ -171,6 +202,12 @@ export class WorkspaceController {
     }
     appLog(`＋ ${this.id}: open ${toolId} → ${region}`);
     return panel;
+  }
+
+  /** @deprecated use requestOpenTool — kept name for call sites that only need panel after load */
+  openTool(toolId: string, opts: { focus?: boolean } = {}) {
+    void this.requestOpenTool(toolId, opts);
+    return this.panelFor(toolId);
   }
 
   reveal(panel: IDockviewPanel) {
@@ -189,7 +226,10 @@ export class WorkspaceController {
   }
 
   openAll() {
-    for (const tool of TOOLS) this.openTool(tool.id, { focus: false });
+    void openTools(
+      TOOLS.map((t) => t.id).filter((id) => isAllowed(id)),
+      this.panelCtx(),
+    );
   }
 
   /** dockview refuses to pop out edge groups, so edge panels are popped out individually. */
@@ -337,11 +377,17 @@ export class WorkspaceController {
 
   async restore(snap: LayoutSnapshot) {
     this.restoring = true;
+    for (const p of [...this.api.panels]) {
+      const toolId = String((p.params as { toolId?: string } | undefined)?.toolId ?? p.id);
+      await closeTool(toolId, { skipReload: true });
+    }
     await clearPopoutQueue();
     for (const p of this.api.getPopouts()) {
       const label = this.labelByWindow.get(p.window);
       if (label) this.destroying.add(label);
     }
+    const toolIds = snap.panels.map((p) => p.panel);
+    await ensureToolsLoaded(toolIds);
     const expected = snap.data.popoutGroups?.length ?? 0;
     for (let i = 0; i < expected; i++) {
       const pos = snap.data.popoutGroups![i].position;
@@ -354,7 +400,7 @@ export class WorkspaceController {
       appLog(`⚠ ${this.id}: fromJSON failed: ${e}`);
       toast.error(String(e));
       this.restoring = false;
-      this.buildDefault();
+      await this.buildDefault();
       return;
     }
     for (const pos of EDGES) this.watchEdge(pos);
@@ -477,7 +523,7 @@ export function makePresetFile(items: { name: string; snapshot: LayoutSnapshot }
 }
 
 export function missingTools(snap: LayoutSnapshot) {
-  return snap.panels.map((p) => p.panel).filter((id) => !TOOL_MAP[id]);
+  return snap.panels.map((p) => p.panel).filter((id) => !CATALOG_MAP[id] || !isAllowed(id));
 }
 
 export { t };

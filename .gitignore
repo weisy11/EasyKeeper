@@ -1,6 +1,8 @@
 # --- Node ---
 node_modules/
 dist/
+!toolbox/*/frontend/vendor/*/dist/
+!toolbox/*/frontend/vendor/*/dist/**
 coverage/
 playwright-report/
 test-results/

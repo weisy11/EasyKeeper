@@ -15,6 +15,10 @@ pnpm install
 pnpm dev
 ```
 
+## Third-party acknowledgements
+
+The built-in Dice tool vendors [@3d-dice/dice-box-threejs](https://github.com/3d-dice/dice-box-threejs) (MIT) for 3D dice. Thanks to Frank Ali / 3D Dice and the Teall / MajorVictory lineage. See `toolbox/dice/README.md`.
+
 ## License
 
 [Apache License 2.0](LICENSE)
