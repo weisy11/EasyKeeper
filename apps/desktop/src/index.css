@@ -3,6 +3,9 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
 
+/* Tool frontends live outside apps/desktop; without this, their Tailwind classes are purged. */
+@source "../../../toolbox/*/frontend/src/**/*.{js,ts,jsx,tsx}";
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

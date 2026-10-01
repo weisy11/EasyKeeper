@@ -22,7 +22,7 @@ const defaultConfig = {
 	theme_colorset: "white",
 	theme_texture: "",
 	theme_material: "glass",
-	gravity_multiplier: 400,
+	gravity_multiplier: 800,
 	light_intensity: 0.7,
 	baseScale: 100,
 	strength: 1,
@@ -146,6 +146,8 @@ class DiceBox {
 		this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 		this.renderer.setClearColor(0x000000, 0);
 
+		// Major: logical desk is always 500×300; DOM/canvas may be any aspect.
+		this.dimensions = new THREE.Vector2(500, 300);
 		this.setDimensions(this.dimensions);
 
 		this.world.gravity.set(0, 0, -9.8 * this.gravity_multiplier);
@@ -190,9 +192,9 @@ class DiceBox {
 		const desk_body_material = new CANNON.Material();
 		const barrier_body_material = new CANNON.Material();
 
-		this.world.addContactMaterial(new CANNON.ContactMaterial( desk_body_material, this.dice_body_material, {mass:0,friction: 0.6, restitution: 0.5}));
-		this.world.addContactMaterial(new CANNON.ContactMaterial( barrier_body_material, this.dice_body_material, {mass:0, friction: 0.6, restitution: 1.0}));
-		this.world.addContactMaterial(new CANNON.ContactMaterial( this.dice_body_material, this.dice_body_material, {mass:0,friction: 0.6, restitution: 0.5}));
+		this.world.addContactMaterial(new CANNON.ContactMaterial( desk_body_material, this.dice_body_material, {mass:0,friction: 0.01, restitution: 0.5}));
+		this.world.addContactMaterial(new CANNON.ContactMaterial( barrier_body_material, this.dice_body_material, {mass:0, friction: 0, restitution: 1.0}));
+		this.world.addContactMaterial(new CANNON.ContactMaterial( this.dice_body_material, this.dice_body_material, {mass:0,friction: 0, restitution: 0.5}));
 
 		this.box_body.desk = new CANNON.Body({allowSleep: false, mass: 0, shape: new CANNON.Plane(), material: desk_body_material})
 		this.world.addBody(this.box_body.desk);
@@ -328,7 +330,7 @@ class DiceBox {
 		this.display.aspect = Math.min(this.display.currentWidth / this.display.containerWidth, this.display.currentHeight / this.display.containerHeight);
 		this.display.scale = Math.sqrt(this.display.containerWidth * this.display.containerWidth + this.display.containerHeight * this.display.containerHeight) / 13;
 
-		this.makeWorldBox()
+		// Walls stay fixed (Major): only built once in initialize(), not on every resize.
 
 		this.renderer.setSize(this.display.currentWidth * 2, this.display.currentHeight * 2);
 
@@ -383,15 +385,13 @@ class DiceBox {
 	}
 
 	resizeWorld(){
+		// Major keeps logical world at 500×300 on every window resize.
 		const resize = () => {
-			const canvas = this.renderer.domElement;
 			const width = this.container.clientWidth;
 			const height = this.container.clientHeight;
-			const needResize = canvas.width !== width || canvas.height !== height;
-			if (needResize) {
-				this.setDimensions(new THREE.Vector2(this.container.clientWidth, this.container.clientHeight))
-			}
-			return needResize;
+			if (width < 8 || height < 8) return false;
+			this.setDimensions(new THREE.Vector2(500, 300));
+			return true;
 		}
 		const debounceResize = debounce(resize)
 		window.addEventListener("resize", debounceResize)
@@ -416,6 +416,10 @@ class DiceBox {
 		for (let i in notationVectors.set) {
 
 			const diceobj = this.DiceFactory.get(notationVectors.set[i].type);
+			if (!diceobj) {
+				notationVectors.error = true;
+				continue;
+			}
 			let numdice = notationVectors.set[i].num;
 			let operator = notationVectors.set[i].op;
 			let sid = notationVectors.set[i].sid;
@@ -894,7 +898,10 @@ class DiceBox {
 			this.rolling = false
 		}
 
-		let vector = { x: (Math.random() * 2 - 0.5) * this.display.currentWidth, y: -(Math.random() * 2 - 0.5) * this.display.currentHeight };
+		// Throw strength from fixed logical desk (500×300), not DOM pixel size.
+		const tw = this.display.containerWidth;
+		const th = this.display.containerHeight;
+		let vector = { x: (Math.random() * 2 - 0.5) * tw, y: -(Math.random() * 2 - 0.5) * th };
 		let dist = Math.sqrt(vector.x * vector.x + vector.y * vector.y) + 100;
 		let boost = (Math.random() + 3) * dist * this.strength;
 
