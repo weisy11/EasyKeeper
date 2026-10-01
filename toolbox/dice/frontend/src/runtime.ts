@@ -24,8 +24,20 @@ export function unregisterDiceBox(box: Disposable) {
 export function disposeDiceRuntime() {
   for (const box of [...boxes]) {
     try {
-      box.clearDice?.();
-      box.destroy?.();
+      const anyBox = box as {
+        clearDice?: () => void;
+        destroy?: () => void;
+        running?: boolean;
+        threadid?: number;
+        renderer?: { dispose?: () => void; forceContextLoss?: () => void; domElement?: HTMLElement };
+      };
+      anyBox.running = false;
+      if (typeof anyBox.threadid === "number") cancelAnimationFrame(anyBox.threadid);
+      anyBox.clearDice?.();
+      anyBox.renderer?.dispose?.();
+      anyBox.renderer?.forceContextLoss?.();
+      anyBox.renderer?.domElement?.remove?.();
+      anyBox.destroy?.();
     } catch {
       /* ignore */
     }

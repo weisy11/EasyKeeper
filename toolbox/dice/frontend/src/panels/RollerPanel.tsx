@@ -30,7 +30,30 @@ type DiceBoxInstance = {
   setDimensions?: (size: { x: number; y: number }) => void;
   destroy?: () => void;
   rolling?: boolean;
+  running?: boolean;
+  threadid?: number;
+  renderer?: {
+    dispose?: () => void;
+    forceContextLoss?: () => void;
+    domElement?: HTMLElement;
+  };
 };
+
+/** Vendor DiceBox has no destroy(); release WebGL so remounts (Strict Mode / dockview ghosts) do not exhaust contexts. */
+function disposeDiceBox(box: DiceBoxInstance | null | undefined) {
+  if (!box) return;
+  try {
+    box.running = false;
+    if (typeof box.threadid === "number") cancelAnimationFrame(box.threadid);
+    box.clearDice?.();
+    box.renderer?.dispose?.();
+    box.renderer?.forceContextLoss?.();
+    box.renderer?.domElement?.remove?.();
+    box.destroy?.();
+  } catch {
+    /* ignore */
+  }
+}
 
 type DiceBoxCtor = new (selector: string, opts?: Record<string, unknown>) => DiceBoxInstance;
 
@@ -137,6 +160,8 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [last, setLast] = useState<LastResult | null>(null);
+  /** CSS :hover may be inert when `(hover: none)` (some VMs / touch); drive HUD opacity from pointer/focus. */
+  const [hudHot, setHudHot] = useState(false);
 
   const net = cocBp;
 
@@ -157,7 +182,9 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
     if (!stage) return;
     let cancelled = false;
     let ro: ResizeObserver | undefined;
+    let sizeWaitRo: ResizeObserver | undefined;
     let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+    let created: DiceBoxInstance | null = null;
 
     const syncEngine = () => {
       const box = boxRef.current;
@@ -174,8 +201,27 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
       debounceTimer = setTimeout(syncEngine, RESIZE_DEBOUNCE_MS);
     };
 
+    const waitUntilSized = () =>
+      new Promise<void>((resolve) => {
+        if (stage.clientWidth >= 8 && stage.clientHeight >= 8) {
+          resolve();
+          return;
+        }
+        sizeWaitRo = new ResizeObserver(() => {
+          if (stage.clientWidth >= 8 && stage.clientHeight >= 8) {
+            sizeWaitRo?.disconnect();
+            sizeWaitRo = undefined;
+            resolve();
+          }
+        });
+        sizeWaitRo.observe(stage);
+      });
+
     (async () => {
       try {
+        await waitUntilSized();
+        if (cancelled) return;
+
         const mod = await import("../../vendor/dice-box-threejs/dist/dice-box-threejs.es.js");
         const DiceBox = (mod.default ?? mod) as DiceBoxCtor;
         if (cancelled) return;
@@ -194,10 +240,10 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
             /* result text is set by explicit roll handlers */
           },
         });
+        created = box;
         await box.initialize();
         if (cancelled) {
-          box.clearDice?.();
-          box.destroy?.();
+          disposeDiceBox(box);
           return;
         }
         boxRef.current = box;
@@ -217,18 +263,14 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
     return () => {
       cancelled = true;
       if (debounceTimer) clearTimeout(debounceTimer);
+      sizeWaitRo?.disconnect();
       window.removeEventListener("resize", scheduleSync);
       ro?.disconnect();
-      const box = boxRef.current;
+      const box = boxRef.current ?? created;
       boxRef.current = null;
       if (box) {
         unregisterDiceBox(box);
-        try {
-          box.clearDice?.();
-          box.destroy?.();
-        } catch {
-          /* ignore */
-        }
+        disposeDiceBox(box);
       }
     };
   }, [stageId]);
@@ -350,7 +392,18 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
       />
 
       <div className="pointer-events-none absolute inset-0 z-20 flex flex-col p-3">
-        <div className="pointer-events-auto mx-auto flex w-full max-w-4xl flex-col items-stretch gap-2.5 rounded-2xl opacity-[0.16] transition-opacity duration-200 hover:opacity-100 focus-within:opacity-100">
+        <div
+          className={[
+            "pointer-events-auto mx-auto flex w-full max-w-4xl flex-col items-stretch gap-2.5 rounded-2xl transition-opacity duration-200",
+            hudHot ? "opacity-100" : "opacity-[0.16]",
+          ].join(" ")}
+          onPointerEnter={() => setHudHot(true)}
+          onPointerLeave={() => setHudHot(false)}
+          onFocusCapture={() => setHudHot(true)}
+          onBlurCapture={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setHudHot(false);
+          }}
+        >
           <div className="flex justify-center">
             <div className="inline-flex rounded-full border border-white/25 bg-black/55 p-1 shadow-md backdrop-blur-md">
               <button
