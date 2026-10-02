@@ -5,11 +5,11 @@ export type DiceLocale = "zh" | "en";
 const strings = {
   modeNormal: { zh: "普通", en: "Normal" },
   modeCoc: { zh: "CoC 1d100", en: "CoC 1d100" },
-  roll: { zh: "掷", en: "Roll" },
+  roll: { zh: "掷骰子", en: "Roll" },
   clear: { zh: "清空", en: "Clear" },
   exprPlaceholder: { zh: "2d6+1d20", en: "2d6+1d20" },
   loading: { zh: "正在加载 3D 骰子…", en: "Loading 3D dice…" },
-  rolling: { zh: "…", en: "…" },
+  rolling: { zh: "掷骰中…", en: "Rolling…" },
   noDice: { zh: "表达式里没有可掷的骰子", en: "No rollable dice in the expression" },
   invalidExpr: { zh: "表达式不合法", en: "Invalid dice expression" },
   unsupportedDie: { zh: "不支持的骰子类型", en: "Unsupported die type" },

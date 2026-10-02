@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { DicesIcon, Loader2Icon } from "lucide-react";
 import type { ToolPanelProps } from "@ek/tool-api";
 import {
   buildCocThrowNotation,
@@ -16,6 +17,7 @@ import { markDiceHeavyLoaded, registerDiceBox, unregisterDiceBox } from "../runt
 const QUICK = ["d4", "d6", "d8", "d10", "d12", "d20", "d100"] as const;
 const COC_BP_MAX = 5;
 const ROLL_TIMEOUT_MS = 20_000;
+const DEFAULT_EXPR = "2d6+1d20";
 
 /** Major’s fixed logical desk. DOM/canvas can be any size; physics stays 500×300. */
 const LOGICAL_WORLD = { x: 500, y: 300 } as const;
@@ -119,7 +121,7 @@ function chipClass() {
 }
 
 function primaryBtnClass() {
-  return "h-11 shrink-0 rounded-md bg-[#c4784a] px-5 text-lg font-semibold text-white shadow-sm hover:bg-[#b56a3f] disabled:opacity-40";
+  return "inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md bg-[#c4784a] text-white shadow-sm hover:bg-[#b56a3f] disabled:opacity-40";
 }
 
 function ghostBtnClass() {
@@ -153,7 +155,7 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
   const pendingResizeRef = useRef(false);
   const locale = useDiceLocale();
   const [mode, setMode] = useState<DicePanelMode>(loadDiceMode);
-  const [expr, setExpr] = useState("");
+  const [expr, setExpr] = useState(DEFAULT_EXPR);
   /** CoC: >0 bonus dice, <0 penalty dice, 0 none. Never both at once. */
   const [cocBp, setCocBp] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -303,7 +305,9 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
   const rollNormal = async (notation: string) => {
     const box = boxRef.current;
     if (!box || busy) return;
-    const normalized = normalizeDiceExpression(notation);
+    const text = notation.trim() || DEFAULT_EXPR;
+    if (!notation.trim()) setExpr(DEFAULT_EXPR);
+    const normalized = normalizeDiceExpression(text);
     if (!normalized.ok) {
       setError(exprErrorMessage(locale, normalized.error, normalized.detail));
       return;
@@ -441,8 +445,14 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
                       {q}
                     </button>
                   ))}
-                  <button type="submit" disabled={!ready || busy || !expr.trim()} className={primaryBtnClass()}>
-                    {busy ? diceT(locale, "rolling") : diceT(locale, "roll")}
+                  <button
+                    type="submit"
+                    disabled={!ready || busy}
+                    className={primaryBtnClass()}
+                    title={diceT(locale, "roll")}
+                    aria-label={diceT(locale, "roll")}
+                  >
+                    {busy ? <Loader2Icon className="size-5 animate-spin" aria-hidden /> : <DicesIcon className="size-5" aria-hidden />}
                   </button>
                   <button type="button" disabled={!ready || busy} className={ghostBtnClass()} onClick={clear}>
                     {diceT(locale, "clear")}
@@ -472,8 +482,14 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
                     +
                   </button>
                 </div>
-                <button type="submit" disabled={!ready || busy} className={primaryBtnClass()}>
-                  {busy ? diceT(locale, "rolling") : diceT(locale, "roll")}
+                <button
+                  type="submit"
+                  disabled={!ready || busy}
+                  className={primaryBtnClass()}
+                  title={diceT(locale, "roll")}
+                  aria-label={diceT(locale, "roll")}
+                >
+                  {busy ? <Loader2Icon className="size-5 animate-spin" aria-hidden /> : <DicesIcon className="size-5" aria-hidden />}
                 </button>
                 <button type="button" disabled={!ready || busy} className={ghostBtnClass()} onClick={clear}>
                   {diceT(locale, "clear")}
