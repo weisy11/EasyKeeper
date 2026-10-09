@@ -258,10 +258,10 @@ function HeaderActions(props: IDockviewHeaderActionsProps) {
 }
 
 function Watermark(_: IWatermarkPanelProps) {
-  const { locale } = useStore(settingsStore);
+  const tr = useT();
   return (
     <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground">
-      {locale === "zh" ? "这个工作区还是空的。按 Ctrl+K（⌘K）打开工具。" : "This workspace is empty. Press Ctrl+K (⌘K) to open a tool."}
+      {tr("ws.empty")}
     </div>
   );
 }
@@ -358,7 +358,7 @@ function CommandPalette() {
               </CommandGroup>
               <CommandGroup heading={tr("cmd.commands")}>
                 <CommandItem value={`open all tools ${kw("cmd.openAll")}`} onSelect={() => run(() => ctrl?.openAll())}>{tr("cmd.openAll")}</CommandItem>
-                <CommandItem value="reset clean default layout" onSelect={() => run(() => void resetDefaultLayout())}>{settingsStore.get().locale === "zh" ? "重置为默认布局" : "Reset to default layout"}</CommandItem>
+                <CommandItem value="reset clean default layout" onSelect={() => run(() => void resetDefaultLayout())}>{tr("layout.resetDefault")}</CommandItem>
                 <CommandItem value={`lock layout ${kw("lock.on", "lock.off")}`} onSelect={() => run(() => chromeStore.set((s) => ({ ...s, locked: !s.locked })))}>{locked ? tr("lock.on") : tr("lock.off")}<CommandShortcut>Ctrl+Shift+L</CommandShortcut></CommandItem>
                 <CommandItem value={`focus mode ${kw("focus.on", "focus.off")}`} onSelect={() => run(() => chromeStore.set((s) => ({ ...s, focusMode: !s.focusMode })))}>{focusMode ? tr("focus.on") : tr("focus.off")}<CommandShortcut>F11</CommandShortcut></CommandItem>
                 <CommandItem value={`maximize active group ${kw("panel.maximize")}`} onSelect={() => run(() => { const a = ctrl?.api; if (a?.activePanel) a.hasMaximizedGroup() ? a.exitMaximizedGroup() : a.maximizeGroup(a.activePanel); })}>{tr("panel.maximize")}<CommandShortcut>Ctrl+Shift+M</CommandShortcut></CommandItem>
@@ -386,9 +386,7 @@ function ToolManager({ open, onOpenChange }: { open: boolean; onOpenChange: (o: 
         <DialogHeader>
           <DialogTitle>{tr("tools.manage")}</DialogTitle>
           <DialogDescription>
-            {settingsStore.get().locale === "zh"
-              ? "勾选的工具会出现在命令面板里；取消勾选后，布局里若仍引用会显示占位。"
-              : "Checked tools appear in the command palette; unchecked tools show a placeholder if still in the layout."}
+            {tr("tools.manageHint")}
           </DialogDescription>
         </DialogHeader>
         <div className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-2 text-sm">
@@ -408,8 +406,8 @@ function ToolManager({ open, onOpenChange }: { open: boolean; onOpenChange: (o: 
                     setAllowed(tool.id, v);
                     appLog(`${v ? "✓ allow" : "⏸ disallow"} ${tool.id}`);
                     if (v)
-                      toast(settingsStore.get().locale === "zh" ? `工具「${l(tool.title)}」可用` : `Tool “${l(tool.title)}” is available`, {
-                        action: { label: settingsStore.get().locale === "zh" ? "打开" : "Open", onClick: () => void activeController()?.requestOpenTool(tool.id) },
+                      toast(t("tools.available", { name: l(tool.title) }), {
+                        action: { label: t("action.open"), onClick: () => void activeController()?.requestOpenTool(tool.id) },
                       });
                   }}
                 />
@@ -431,7 +429,7 @@ function SavePresetDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
         <DialogHeader>
           <DialogTitle>{tr("layout.savePreset")}</DialogTitle>
         </DialogHeader>
-        <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && name && (e.currentTarget.closest("[data-slot=dialog-content]")?.querySelector<HTMLButtonElement>("[data-save-preset]")?.click())} placeholder={settingsStore.get().locale === "zh" ? "预设名，例如「战斗」" : "Preset name, e.g. “Combat”"} />
+        <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && name && (e.currentTarget.closest("[data-slot=dialog-content]")?.querySelector<HTMLButtonElement>("[data-save-preset]")?.click())} placeholder={tr("layout.presetNamePlaceholder")} />
         <DialogFooter>
           <Button
             data-save-preset
@@ -606,7 +604,7 @@ function TopBar({ onTools, onSavePreset }: { onTools: () => void; onSavePreset: 
       </Button>
       <div className="ml-1 flex items-center gap-1 border-l border-border pl-2">
         <Button variant="ghost" size="sm" onClick={() => settingsStore.set((s) => ({ ...s, locale: s.locale === "zh" ? "en" : "zh" }))} title={tr("settings.lang")} data-lang>
-          {settings.locale === "zh" ? "中" : "EN"}
+          {settings.locale === "zh" ? tr("settings.langZh") : tr("settings.langEn")}
         </Button>
         <Button variant="ghost" size="icon-sm" onClick={() => settingsStore.set((s) => ({ ...s, fontScale: Math.max(0.8, +(s.fontScale - 0.1).toFixed(2)) }))} title={tr("settings.font")}>
           <span className="text-xs">A−</span>

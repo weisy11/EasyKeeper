@@ -33,6 +33,8 @@ const dict = {
   "tools.installed": { zh: "已安装", en: "Installed" },
   "settings.title": { zh: "全局设置", en: "Global settings" },
   "settings.lang": { zh: "语言", en: "Language" },
+  "settings.langZh": { zh: "中", en: "中" },
+  "settings.langEn": { zh: "EN", en: "EN" },
   "settings.font": { zh: "字号", en: "Font size" },
   "settings.theme": { zh: "主题", en: "Theme" },
   "settings.dark": { zh: "深色", en: "Dark" },
@@ -55,6 +57,20 @@ const dict = {
   "panel.hostCount": { zh: "Host 计数（框架 store）", en: "Host count (framework store)" },
   "panel.mounts": { zh: "挂载次数", en: "Mounts" },
   "panel.doc": { zh: "所在文档", en: "Document" },
+  "ws.empty": {
+    zh: "这个工作区还是空的。按 Ctrl+K（⌘K）打开工具。",
+    en: "This workspace is empty. Press Ctrl+K (⌘K) to open a tool.",
+  },
+  "layout.resetDefault": { zh: "重置为默认布局", en: "Reset to default layout" },
+  "tools.manageHint": {
+    zh: "勾选的工具会出现在命令面板里；取消勾选后，布局里若仍引用会显示占位。",
+    en: "Checked tools appear in the command palette; unchecked tools show a placeholder if still in the layout.",
+  },
+  "tools.available": { zh: "工具「{name}」可用", en: "Tool “{name}” is available" },
+  "action.open": { zh: "打开", en: "Open" },
+  "layout.presetNamePlaceholder": { zh: "预设名，例如「战斗」", en: "Preset name, e.g. “Combat”" },
+  "popout.blocked": { zh: "弹出窗口被拦截", en: "Pop-out blocked" },
+  "popout.opening": { zh: "正在弹出窗口…", en: "Opening pop-out…" },
 } as const;
 
 export type I18nKey = keyof typeof dict;

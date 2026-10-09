@@ -27,7 +27,7 @@ export type WorkspaceMeta = { id: string; name: string };
 export type WorkspacesState = { list: WorkspaceMeta[]; active: string };
 
 export const workspacesStore = createStore<WorkspacesState>(
-  { list: [{ id: "ws-1", name: "跑团 / Session" }, { id: "ws-2", name: "备团 / Prep" }], active: "ws-1" },
+  { list: [{ id: "ws-1", name: "Session" }, { id: "ws-2", name: "Prep" }], active: "ws-1" },
   "ek.workspaces",
 );
 
@@ -106,7 +106,7 @@ export class WorkspaceController {
     });
     api.onDidOpenPopoutWindowFail(() => {
       appLog(`⚠ ${this.id}: pop-out window failed to open`);
-      toast.error("Pop-out blocked / 弹出窗口被拦截");
+      toast.error(t("popout.blocked"));
     });
     for (const pos of EDGES) this.watchEdge(pos);
   }
@@ -259,7 +259,7 @@ export class WorkspaceController {
       height: Math.max(320, Math.round(el.height)),
     };
     log(`[${this.id}] popout requested group=${group.id} loc=${loc.type} offset=${box.x},${box.y}`);
-    toast.message("Opening pop-out… / 正在弹出窗口…");
+    toast.message(t("popout.opening"));
     await queuePopout(this.id, box, true);
     const ok = await this.api.addPopoutGroup(item, { position: { left: box.x!, top: box.y!, width: box.width!, height: box.height! } });
     if (!ok) await clearPopoutQueue();

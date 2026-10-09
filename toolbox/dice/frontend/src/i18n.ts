@@ -18,6 +18,8 @@ const strings = {
   bpNone: { zh: "无奖惩", en: "No bonus/penalty" },
   bpBonus: { zh: "奖励×{n}", en: "Bonus ×{n}" },
   bpPenalty: { zh: "惩罚×{n}", en: "Penalty ×{n}" },
+  bpDecTitle: { zh: "增加惩罚 / 减少奖励", en: "Add penalty / remove bonus" },
+  bpIncTitle: { zh: "增加奖励 / 减少惩罚", en: "Add bonus / remove penalty" },
   pickBest: { zh: "取最好 {n}", en: "Best {n}" },
   pickWorst: { zh: "取最差 {n}", en: "Worst {n}" },
   combo: { zh: "组合[{list}]", en: "Combo [{list}]" },

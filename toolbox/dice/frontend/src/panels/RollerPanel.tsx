@@ -466,7 +466,7 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
                     type="button"
                     disabled={!ready || busy || net <= -COC_BP_MAX}
                     className="h-10 w-10 rounded-md text-xl text-[#c4784a] hover:bg-white/10 disabled:opacity-40"
-                    title="增加惩罚 / 减少奖励"
+                    title={diceT(locale, "bpDecTitle")}
                     onClick={() => bumpCocBp(-1)}
                   >
                     −
@@ -476,7 +476,7 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
                     type="button"
                     disabled={!ready || busy || net >= COC_BP_MAX}
                     className="h-10 w-10 rounded-md text-xl text-[#c4784a] hover:bg-white/10 disabled:opacity-40"
-                    title="增加奖励 / 减少惩罚"
+                    title={diceT(locale, "bpIncTitle")}
                     onClick={() => bumpCocBp(1)}
                   >
                     +
