@@ -1,6 +1,8 @@
 # --- Node ---
 node_modules/
 dist/
+!toolbox/*/frontend/vendor/*/dist/
+!toolbox/*/frontend/vendor/*/dist/**
 coverage/
 playwright-report/
 test-results/
@@ -80,4 +82,5 @@ logs/
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
+.cursor/
 *.swp

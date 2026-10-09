@@ -1,0 +1,11 @@
+{
+  "name": "easykeeper",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.27.1",
+  "scripts": {
+    "dev": "pnpm --filter @ek/desktop tauri dev",
+    "build": "pnpm --filter @ek/desktop tauri build",
+    "desktop": "pnpm --filter @ek/desktop"
+  }
+}
