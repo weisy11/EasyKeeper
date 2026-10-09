@@ -4,7 +4,8 @@ A modular desktop toolbox for game masters to prepare and run tabletop RPG sessi
 
 面向跑团主持人的模块化桌面工具箱，用于备团和带团。
 
-> Status: early development. Desktop shell + layout/multi-window framework in progress.
+> Status: early development. Desktop app + layout/multi-window framework in progress.  
+> 状态：早期开发中。桌面应用 + 布局/多窗口框架推进中。
 
 ## Develop (macOS)
 
