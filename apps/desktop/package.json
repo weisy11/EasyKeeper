@@ -13,6 +13,7 @@
   "dependencies": {
     "@base-ui/react": "^1.8.0",
     "@ek-tool/dice": "workspace:*",
+    "@ek-tool/scenario": "workspace:*",
     "@ek/tool-api": "workspace:*",
     "@fontsource-variable/geist": "^5.3.0",
     "@tauri-apps/api": "^2.12.0",

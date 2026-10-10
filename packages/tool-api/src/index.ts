@@ -6,6 +6,8 @@ export type ToolRegion = "center" | "left" | "right" | "bottom";
 
 export type ToolPanelProps = {
   panelId: string;
+  /** Open project directory. Empty when no project is open. */
+  projectPath: string;
 };
 
 export type ToolPanelDef = {

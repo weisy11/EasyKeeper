@@ -13,7 +13,14 @@ function loadInitial(): string[] {
     const raw = localStorage.getItem(KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as string[];
-      if (Array.isArray(parsed)) return parsed.filter((id) => !!CATALOG_MAP[id]);
+      if (Array.isArray(parsed)) {
+        const ids = parsed.filter((id) => !!CATALOG_MAP[id]);
+        if (!ids.includes("ek.scenario")) {
+          ids.push("ek.scenario");
+          localStorage.setItem(KEY, JSON.stringify(ids));
+        }
+        return ids;
+      }
     }
   } catch {
     /* ignore */

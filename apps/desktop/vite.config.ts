@@ -11,6 +11,6 @@ export default defineConfig({
   server: { port: 47231, strictPort: true, host: "127.0.0.1", hmr: false },
   clearScreen: false,
   optimizeDeps: {
-    exclude: ["@ek-tool/dice", "@ek/tool-api"],
+    exclude: ["@ek-tool/dice", "@ek-tool/scenario", "@ek/tool-api"],
   },
 });

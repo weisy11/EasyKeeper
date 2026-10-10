@@ -144,7 +144,7 @@ export class WorkspaceController {
     }
     this.userCollapsed = { left: false, right: false, bottom: false };
     this.restoring = false;
-    await openTools(["ek.dice"], this.panelCtx());
+    await openTools(["ek.scenario"], this.panelCtx());
     this.applyAutoCollapse(liveStore.get().auto);
     bumpLive();
   }

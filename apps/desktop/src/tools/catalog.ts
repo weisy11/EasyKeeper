@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { DicesIcon, SquareIcon, type LucideIcon } from "lucide-react";
+import { BookOpenIcon, DicesIcon, SquareIcon, type LucideIcon } from "lucide-react";
 import type { LText } from "@/lib/i18n";
 import type { ToolDefinition } from "@ek/tool-api";
 
@@ -20,6 +20,13 @@ export const BUILTIN_CATALOG: BuiltinToolMeta[] = [
     icon: DicesIcon,
     defaultAllowed: true,
     load: () => import("@ek-tool/dice").then((m) => m.diceTool),
+  },
+  {
+    id: "ek.scenario",
+    title: { zh: "模组", en: "Scenario" },
+    icon: BookOpenIcon,
+    defaultAllowed: true,
+    load: () => import("@ek-tool/scenario").then((m) => m.scenarioTool),
   },
 ];
 

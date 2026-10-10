@@ -1,0 +1,54 @@
+.scenario-editor .ProseMirror {
+  min-height: 100%;
+  outline: none;
+  padding: 12px 14px;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.scenario-editor .ProseMirror p {
+  margin: 0.35em 0;
+}
+
+.scenario-editor .ProseMirror h1,
+.scenario-editor .ProseMirror h2,
+.scenario-editor .ProseMirror h3,
+.scenario-editor .ProseMirror h4,
+.scenario-editor .ProseMirror h5 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 0.6em 0 0.3em;
+}
+
+.scenario-editor .ProseMirror h1 { font-size: 1.45rem; }
+.scenario-editor .ProseMirror h2 { font-size: 1.2rem; }
+.scenario-editor .ProseMirror h3 { font-size: 1.05rem; }
+.scenario-editor .ProseMirror h4 { font-size: 0.95rem; }
+.scenario-editor .ProseMirror h5 { font-size: 0.85rem; }
+
+.scenario-editor .ProseMirror mark {
+  border-radius: 2px;
+  padding: 0 0.12em;
+}
+
+.scenario-editor .ProseMirror ul,
+.scenario-editor .ProseMirror ol {
+  margin: 0.35em 0;
+  padding-left: 1.3rem;
+}
+
+.scenario-editor .ProseMirror ul { list-style: disc; }
+.scenario-editor .ProseMirror ol { list-style: decimal; }
+
+.scenario-editor .ProseMirror img {
+  max-width: 100%;
+  height: auto;
+}
+
+.scenario-editor .ProseMirror p.is-editor-empty:first-child::before {
+  color: var(--muted-foreground);
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}

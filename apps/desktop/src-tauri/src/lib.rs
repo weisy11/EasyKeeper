@@ -1,6 +1,9 @@
 mod geometry;
+mod project_db;
+mod snapshot;
 
 use geometry::{MainWindowState, Rect};
+use snapshot::{create_project_snapshot, delete_project_snapshot, list_project_snapshots};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -117,8 +120,50 @@ fn write_text_file(path: String, contents: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn remove_file(path: String) -> Result<(), String> {
+  let file = std::path::Path::new(&path);
+  if file.is_dir() {
+    return Err("not a file".to_string());
+  }
+  match std::fs::remove_file(file) {
+    Ok(()) => Ok(()),
+    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+    Err(err) => Err(err.to_string()),
+  }
+}
+
+#[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
   std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_base64_file(path: String, contents: String) -> Result<(), String> {
+  use base64::Engine;
+  let bytes = base64::engine::general_purpose::STANDARD
+    .decode(contents.trim())
+    .map_err(|err| err.to_string())?;
+  if let Some(parent) = std::path::Path::new(&path).parent() {
+    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+  }
+  std::fs::write(&path, bytes).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn read_base64_file(path: String) -> Result<String, String> {
+  use base64::Engine;
+  let bytes = std::fs::read(&path).map_err(|err| err.to_string())?;
+  Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+#[tauri::command]
+fn project_db_exec(project_path: String, tool_prefix: String, sql: String, params: Option<Vec<serde_json::Value>>) -> Result<(), String> {
+  project_db::exec(&project_path, &tool_prefix, &sql, &params.unwrap_or_default())
+}
+
+#[tauri::command]
+fn project_db_query(project_path: String, tool_prefix: String, sql: String, params: Option<Vec<serde_json::Value>>) -> Result<Vec<serde_json::Value>, String> {
+  project_db::query(&project_path, &tool_prefix, &sql, &params.unwrap_or_default())
 }
 
 #[tauri::command]
@@ -267,7 +312,15 @@ pub fn run() {
       focus_window,
       reset_main_window_state,
       write_text_file,
+      remove_file,
       read_text_file,
+      write_base64_file,
+      read_base64_file,
+      project_db_exec,
+      project_db_query,
+      create_project_snapshot,
+      list_project_snapshots,
+      delete_project_snapshot,
       documents_dir,
       join_path,
       ensure_dir,

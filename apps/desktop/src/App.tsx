@@ -54,6 +54,7 @@ import { allowedToolsStore, getLoadedTool, getToolError, isAllowed, loadedToolsS
 import { appLog, chromeStore, settingsStore, useStore } from "./lib/store";
 import { t, translate, useL, useT, type I18nKey } from "./lib/i18n";
 import { WelcomePage } from "./project/WelcomePage";
+import { ProjectSnapshots } from "./project/ProjectSnapshots";
 import { sessionStore } from "./project/sessionStore";
 
 const kw = (...keys: I18nKey[]) => keys.flatMap((k) => [translate("zh", k), translate("en", k)]).join(" ");
@@ -96,6 +97,7 @@ class PanelErrorBoundary extends Component<{ children: ReactNode }, { error?: Er
 function ToolPanel(props: IDockviewPanelProps<{ toolId: string }>) {
   const tr = useT();
   const l = useL();
+  const session = useStore(sessionStore);
   useStore(loadedToolsStore);
   useStore(allowedToolsStore);
   const toolId = props.params.toolId;
@@ -165,7 +167,7 @@ function ToolPanel(props: IDockviewPanelProps<{ toolId: string }>) {
 
   return (
     <PanelErrorBoundary>
-      <C panelId={toolId} />
+      <C panelId={toolId} projectPath={session?.projectPath ?? ""} />
     </PanelErrorBoundary>
   );
 }
@@ -604,7 +606,14 @@ function TopBar({ onTools, onSavePreset }: { onTools: () => void; onSavePreset: 
       <Button variant="ghost" size="icon-sm" title={tr("focus.off")} onClick={() => chromeStore.set((s) => ({ ...s, focusMode: true }))}>
         <FocusIcon />
       </Button>
+      <ProjectSnapshots />
       <div className="ml-1 flex items-center gap-1 border-l border-border pl-2">
+        <Button variant="outline" size="sm" data-temp-lang title={tr("settings.lang")} onClick={() => settingsStore.set((s) => ({ ...s, locale: s.locale === "zh" ? "en" : "zh" }))}>
+          {tr("settings.lang")}：{settings.locale === "zh" ? "中文" : "EN"}
+        </Button>
+        <Button variant="outline" size="sm" data-temp-theme title={tr("settings.theme")} onClick={() => settingsStore.set((s) => ({ ...s, theme: s.theme === "dark" ? "light" : "dark" }))}>
+          {tr("temp.background")}：{settings.theme === "dark" ? tr("settings.dark") : tr("settings.light")}
+        </Button>
         <Button variant="ghost" size="sm" onClick={() => settingsStore.set((s) => ({ ...s, locale: s.locale === "zh" ? "en" : "zh" }))} title={tr("settings.lang")} data-lang>
           {settings.locale === "zh" ? tr("settings.langZh") : tr("settings.langEn")}
         </Button>

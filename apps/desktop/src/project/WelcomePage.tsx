@@ -17,7 +17,7 @@ import {
   splitProjectPath,
   validFolderName,
 } from "./fs";
-import { rememberProject, recentStore } from "./recent";
+import { forgetProject, migrateLegacyRecent, rememberProject, recentStore } from "./recent";
 import { sessionStore } from "./sessionStore";
 import type { ProjectKind, RecentProject } from "./types";
 
@@ -110,6 +110,10 @@ export function WelcomePage() {
   const [error, setError] = useState<string | null>(null);
   const [homeError, setHomeError] = useState<{ kind: ProjectKind; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void migrateLegacyRecent();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -244,7 +248,7 @@ export function WelcomePage() {
     setBusy(true);
     try {
       const opened = await openProject(path, expected);
-      const recentHit = recent.items.find((item) => item.path === path && item.kind === expected);
+      const recentHit = recent.recentRecords.find((item) => item.path === path);
       const modulePath = expected === "gameRecord" ? (recentHit?.modulePath ?? null) : null;
       enterProject(path, opened.name, expected, modulePath);
     } catch (caught) {
@@ -281,8 +285,11 @@ export function WelcomePage() {
   }
 
   const shown = (path: string) => displayPath(path, roots?.home ?? null);
-  const scenarios = recent.items.filter((item) => item.kind === "scenario");
-  const records = recent.items.filter((item) => item.kind === "gameRecord");
+
+  function removeRecent(item: RecentProject) {
+    forgetProject(item.kind, item.path);
+    setHomeError(null);
+  }
 
   return (
     <div className="ek-welcome" data-welcome data-view={view.name}>
@@ -304,21 +311,25 @@ export function WelcomePage() {
             <div>
               <RecentBlock
                 title={tr("welcome.editScenario")}
-                items={scenarios}
+                items={recent.recentScenario}
                 showWhen={false}
                 error={homeError?.kind === "scenario" ? homeError.text : null}
                 shown={shown}
                 busy={busy}
+                removeLabel={tr("welcome.removeRecent")}
                 onOpen={(item) => void openRecent(item)}
+                onRemove={removeRecent}
               />
               <RecentBlock
                 title={tr("welcome.continueGame")}
-                items={records}
+                items={recent.recentRecords}
                 showWhen
                 error={homeError?.kind === "gameRecord" ? homeError.text : null}
                 shown={shown}
                 busy={busy}
+                removeLabel={tr("welcome.removeRecent")}
                 onOpen={(item) => void openRecent(item)}
+                onRemove={removeRecent}
               />
             </div>
             <div className="actions">
@@ -463,7 +474,9 @@ function RecentBlock({
   error,
   shown,
   busy,
+  removeLabel,
   onOpen,
+  onRemove,
 }: {
   title: string;
   items: RecentProject[];
@@ -471,20 +484,32 @@ function RecentBlock({
   error: string | null;
   shown: (path: string) => string;
   busy: boolean;
+  removeLabel: string;
   onOpen: (item: RecentProject) => void;
+  onRemove: (item: RecentProject) => void;
 }) {
   return (
     <section className="block">
       <h2>{title}</h2>
       <ul>
         {items.map((item) => (
-          <li key={item.path}>
+          <li key={item.path} className="recent">
             <button type="button" className="item" disabled={busy} data-recent={item.kind} onClick={() => onOpen(item)}>
               <span className="name">
                 {item.name}
                 {showWhen && <span className="when">{formatOpened(item.openedAt)}</span>}
               </span>
               <span className="path">{shown(item.path)}</span>
+            </button>
+            <button
+              type="button"
+              className="remove"
+              disabled={busy}
+              aria-label={removeLabel}
+              data-remove-recent={item.path}
+              onClick={() => onRemove(item)}
+            >
+              ×
             </button>
           </li>
         ))}
