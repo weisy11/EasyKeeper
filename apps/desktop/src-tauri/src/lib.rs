@@ -4,7 +4,7 @@ use geometry::{MainWindowState, Rect};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
@@ -29,6 +29,12 @@ struct PopoutQueue(Mutex<VecDeque<PendingPopout>>);
 
 #[derive(Default)]
 struct MainGeometry(Mutex<Option<MainWindowState>>);
+
+/// While the welcome page is up, resize events must not replace the project window frame.
+struct PersistMainWindow(AtomicBool);
+
+const WELCOME_W: f64 = 860.0;
+const WELCOME_H: f64 = 564.0;
 
 #[derive(Clone, Serialize)]
 struct PopoutCreated {
@@ -68,6 +74,9 @@ fn reset_main_window_state(app: AppHandle) {
 }
 
 fn record_main_geometry(app: &AppHandle) {
+  if !app.state::<PersistMainWindow>().0.load(Ordering::SeqCst) {
+    return;
+  }
   let Some(w) = app.get_webview_window("main") else { return };
   let maximized = w.is_maximized().unwrap_or(false);
   let fullscreen = w.is_fullscreen().unwrap_or(false);
@@ -112,6 +121,117 @@ fn read_text_file(path: String) -> Result<String, String> {
   std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn documents_dir(app: AppHandle) -> Result<String, String> {
+  app.path().document_dir().map(|p| p.to_string_lossy().to_string()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn join_path(parent: String, name: String) -> Result<String, String> {
+  if !valid_folder_name(&name) {
+    return Err("invalid-name".into());
+  }
+  Ok(std::path::Path::new(&parent).join(name).to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn ensure_dir(path: String) -> Result<(), String> {
+  std::fs::create_dir_all(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn path_exists(path: String) -> bool {
+  std::path::Path::new(&path).exists()
+}
+
+#[tauri::command]
+fn list_child_dirs(path: String) -> Result<Vec<String>, String> {
+  let mut names = Vec::new();
+  for entry in std::fs::read_dir(&path).map_err(|e| e.to_string())? {
+    let entry = entry.map_err(|e| e.to_string())?;
+    let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+    if !is_dir {
+      continue;
+    }
+    if let Some(name) = entry.file_name().to_str() {
+      names.push(name.to_string());
+    }
+  }
+  names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+  Ok(names)
+}
+
+fn welcome_origin(app: &AppHandle, anchor: Option<&MainWindowState>) -> Option<(f64, f64)> {
+  let monitors = app.available_monitors().ok()?;
+  let saved = anchor.map(|s| s.rect);
+  let monitor = saved.and_then(|rect| {
+    let cx = rect.x + rect.width / 2.0;
+    let cy = rect.y + rect.height / 2.0;
+    monitors.iter().find(|m| {
+      let p = m.position().to_logical::<f64>(m.scale_factor());
+      let s = m.size().to_logical::<f64>(m.scale_factor());
+      cx >= p.x && cx < p.x + s.width && cy >= p.y && cy < p.y + s.height
+    })
+  });
+  let m = monitor.or_else(|| monitors.first())?;
+  let p = m.position().to_logical::<f64>(m.scale_factor());
+  let s = m.size().to_logical::<f64>(m.scale_factor());
+  Some((p.x + (s.width - WELCOME_W) / 2.0, p.y + (s.height - WELCOME_H) / 2.0))
+}
+
+fn place_welcome(app: &AppHandle, window: &tauri::WebviewWindow) {
+  if window.is_maximized().unwrap_or(false) {
+    let _ = window.unmaximize();
+  }
+  let _ = window.set_fullscreen(false);
+  let _ = window.set_size(tauri::LogicalSize::new(WELCOME_W, WELCOME_H));
+  let saved = app.state::<MainGeometry>().0.lock().unwrap().clone();
+  if let Some((x, y)) = welcome_origin(app, saved.as_ref()) {
+    let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+  } else {
+    let _ = window.center();
+  }
+}
+
+fn place_project(app: &AppHandle, window: &tauri::WebviewWindow) {
+  let saved = app.state::<MainGeometry>().0.lock().unwrap().clone();
+  match saved {
+    Some(state) => {
+      let (rect, _) = geometry::fit_on_screen(app, state.rect);
+      let _ = window.set_size(tauri::LogicalSize::new(rect.width, rect.height));
+      let _ = window.set_position(tauri::LogicalPosition::new(rect.x, rect.y));
+      if state.maximized {
+        let _ = window.maximize();
+      }
+      if state.fullscreen {
+        let _ = window.set_fullscreen(true);
+      }
+    }
+    None => {
+      let _ = window.set_size(tauri::LogicalSize::new(1360.0, 820.0));
+      let _ = window.center();
+    }
+  }
+}
+
+#[tauri::command]
+fn set_welcome_window(app: AppHandle, welcome: bool) {
+  let Some(window) = app.get_webview_window("main") else { return };
+  if welcome {
+    app.state::<PersistMainWindow>().0.store(false, Ordering::SeqCst);
+    place_welcome(&app, &window);
+  } else {
+    place_project(&app, &window);
+    app.state::<PersistMainWindow>().0.store(true, Ordering::SeqCst);
+    record_main_geometry(&app);
+  }
+}
+
+fn valid_folder_name(name: &str) -> bool {
+  let name = name.trim();
+  !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\\')
+}
+
 fn emit_geometry(app: &AppHandle, label: &str) {
   if let Some(w) = app.get_webview_window(label) {
     let scale = w.scale_factor().unwrap_or(1.0);
@@ -138,6 +258,7 @@ pub fn run() {
     .plugin(tauri_plugin_dialog::init())
     .manage(PopoutQueue::default())
     .manage(MainGeometry::default())
+    .manage(PersistMainWindow(AtomicBool::new(false)))
     .invoke_handler(tauri::generate_handler![
       log_line,
       queue_popout,
@@ -146,7 +267,13 @@ pub fn run() {
       focus_window,
       reset_main_window_state,
       write_text_file,
-      read_text_file
+      read_text_file,
+      documents_dir,
+      join_path,
+      ensure_dir,
+      path_exists,
+      list_child_dirs,
+      set_welcome_window
     ])
     .setup(move |app| {
       let handle = app.handle().clone();
@@ -158,10 +285,15 @@ pub fn run() {
       match &saved {
         Some(s) => {
           let (r, moved) = geometry::fit_on_screen(app.handle(), s.rect);
-          println!("[RUST] main restore {:?} monitor={:?} -> {r:?}{}", s.rect, s.monitor, if moved { " (off-screen, moved to primary)" } else { "" });
-          main_builder = main_builder.inner_size(r.width, r.height).position(r.x, r.y);
+          println!("[RUST] project frame {:?} monitor={:?} -> {r:?}{}", s.rect, s.monitor, if moved { " (off-screen, moved to primary)" } else { "" });
         }
-        None => main_builder = main_builder.inner_size(1360.0, 820.0).center(),
+        None => {}
+      }
+      main_builder = main_builder.inner_size(WELCOME_W, WELCOME_H);
+      if let Some((x, y)) = welcome_origin(app.handle(), saved.as_ref()) {
+        main_builder = main_builder.position(x, y);
+      } else {
+        main_builder = main_builder.center();
       }
       let main = main_builder
         .disable_drag_drop_handler()
@@ -238,15 +370,7 @@ pub fn run() {
         });
       }
 
-      if let Some(s) = &saved {
-        if s.maximized {
-          let _ = main.maximize();
-        }
-      }
       main.show()?;
-      if saved.as_ref().is_some_and(|s| s.fullscreen) {
-        let _ = main.set_fullscreen(true);
-      }
       *app.state::<MainGeometry>().0.lock().unwrap() = saved;
 
       let h3 = app.handle().clone();
