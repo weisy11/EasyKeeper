@@ -1,0 +1,321 @@
+.ek-welcome {
+  height: 100vh;
+  overflow: hidden;
+  background: #1e1e1e;
+  color: #f3f3f3;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.ek-welcome * {
+  box-sizing: border-box;
+}
+
+.ek-welcome button,
+.ek-welcome input {
+  font-family: inherit;
+}
+
+.ek-welcome button {
+  cursor: pointer;
+}
+
+.ek-welcome .page {
+  height: 100%;
+  overflow: auto;
+  padding: 36px 44px 32px;
+  display: flex;
+  flex-direction: column;
+}
+
+.ek-welcome .page.sub {
+  padding-bottom: 28px;
+}
+
+.ek-welcome .page.sub > form,
+.ek-welcome .picker {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.ek-welcome .top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 32px;
+}
+
+.ek-welcome h1 {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 300;
+  letter-spacing: 0.2px;
+  line-height: 1;
+  color: #ffffff;
+}
+
+.ek-welcome .lang {
+  border: 0;
+  background: transparent;
+  color: #f3f3f3;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 0 2px;
+}
+
+.ek-welcome .split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 40px;
+  align-items: start;
+}
+
+.ek-welcome h2 {
+  margin: 0 0 10px;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: #ffffff;
+}
+
+.ek-welcome .page.sub h2 {
+  margin-bottom: 28px;
+}
+
+.ek-welcome .block + .block {
+  margin-top: 52px;
+}
+
+.ek-welcome ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ek-welcome .item {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 14px 2px 13px;
+  border-radius: 2px;
+  display: block;
+}
+
+.ek-welcome .item:hover {
+  background: #2a2d2e;
+}
+
+.ek-welcome .name {
+  font-size: 16px;
+  line-height: 1.25;
+  color: #f0f0f0;
+}
+
+.ek-welcome .when {
+  margin-left: 12px;
+  font-size: 14px;
+  color: #9d9d9d;
+  font-variant-numeric: tabular-nums;
+}
+
+.ek-welcome .path {
+  display: block;
+  margin-top: 3px;
+  font-size: 14px;
+  line-height: 1.3;
+  color: #9d9d9d;
+}
+
+.ek-welcome .actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ek-welcome .act {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  text-align: left;
+  border: 1px solid #3e3e42;
+  background: #252526;
+  color: inherit;
+  border-radius: 2px;
+  padding: 11px 16px;
+  min-height: 64px;
+}
+
+.ek-welcome .act:hover {
+  background: #2a2d2e;
+}
+
+.ek-welcome .ico {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: #0078d4;
+}
+
+.ek-welcome .act b {
+  display: block;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: #ffffff;
+}
+
+.ek-welcome .act .sub {
+  display: block;
+  margin-top: 3px;
+  font-size: 14px;
+  line-height: 1.35;
+  font-weight: 400;
+  color: #9d9d9d;
+}
+
+.ek-welcome .field {
+  margin-bottom: 22px;
+}
+
+.ek-welcome label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 14px;
+  color: #cccccc;
+}
+
+.ek-welcome .hint {
+  margin: 14px 0 0;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #9d9d9d;
+}
+
+.ek-welcome .loc {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ek-welcome input {
+  flex: 1;
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid #3e3e42;
+  border-radius: 2px;
+  background: #2d2d2d;
+  color: #f3f3f3;
+  font-size: 14px;
+}
+
+.ek-welcome .field > input {
+  width: 100%;
+}
+
+.ek-welcome .iconbtn {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1px solid #3e3e42;
+  border-radius: 2px;
+  background: #2d2d2d;
+  color: #cccccc;
+  padding: 0;
+}
+
+.ek-welcome .list {
+  margin-top: 16px;
+  border: 1px solid #3e3e42;
+  background: #252526;
+  border-radius: 2px;
+  min-height: 40px;
+}
+
+.ek-welcome .row {
+  width: 100%;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px 0 12px;
+  border: 0;
+  background: transparent;
+  color: #f3f3f3;
+  font-size: 14px;
+  text-align: left;
+}
+
+.ek-welcome .row + .row {
+  border-top: 1px solid #2a2a2a;
+}
+
+.ek-welcome .row.sel {
+  background: #04395e;
+}
+
+.ek-welcome .row .grow {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ek-welcome .enter {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: #9d9d9d;
+  padding: 0;
+}
+
+.ek-welcome .err {
+  margin: 12px 0 0;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #f48771;
+}
+
+.ek-welcome .foot {
+  margin-top: auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 16px;
+}
+
+.ek-welcome button.btn {
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 2px;
+  font-size: 14px;
+}
+
+.ek-welcome .cancel {
+  border: 1px solid #3e3e42;
+  background: transparent;
+  color: #f3f3f3;
+}
+
+.ek-welcome .primary {
+  border: 0;
+  background: #0078d4;
+  color: #ffffff;
+}
+
+.ek-welcome button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

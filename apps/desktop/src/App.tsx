@@ -53,9 +53,11 @@ import { TOOL_MAP, TOOLS, UNKNOWN_ICON } from "./tools";
 import { allowedToolsStore, getLoadedTool, getToolError, isAllowed, loadedToolsStore, setAllowed } from "./tools/allowed";
 import { appLog, chromeStore, settingsStore, useStore } from "./lib/store";
 import { t, translate, useL, useT, type I18nKey } from "./lib/i18n";
+import { WelcomePage } from "./project/WelcomePage";
+import { sessionStore } from "./project/sessionStore";
 
 const kw = (...keys: I18nKey[]) => keys.flatMap((k) => [translate("zh", k), translate("en", k)]).join(" ");
-import { openTextFile, saveTextFile, log } from "./lib/platform";
+import { openTextFile, saveTextFile, log, setWelcomeWindow } from "./lib/platform";
 import {
   EDGES,
   activeController,
@@ -753,7 +755,7 @@ function installGlobalHooks() {
 
 installGlobalHooks();
 
-export default function App() {
+function DesktopApp() {
   const ws = useStore(workspacesStore);
   const { focusMode } = useStore(chromeStore);
   const { theme } = useStore(settingsStore);
@@ -781,4 +783,22 @@ export default function App() {
       <Toaster theme={theme} position="bottom-right" richColors />
     </div>
   );
+}
+
+export default function App() {
+  const session = useStore(sessionStore);
+  const { theme } = useStore(settingsStore);
+  const welcome = session == null;
+  useEffect(() => {
+    void setWelcomeWindow(welcome);
+  }, [welcome]);
+  if (!session) {
+    return (
+      <>
+        <WelcomePage />
+        <Toaster theme={theme} position="bottom-right" richColors />
+      </>
+    );
+  }
+  return <DesktopApp />;
 }
