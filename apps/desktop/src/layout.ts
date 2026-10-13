@@ -27,9 +27,26 @@ export type WorkspaceMeta = { id: string; name: string };
 export type WorkspacesState = { list: WorkspaceMeta[]; active: string };
 
 export const workspacesStore = createStore<WorkspacesState>(
-  { list: [{ id: "ws-1", name: "Session" }, { id: "ws-2", name: "Prep" }], active: "ws-1" },
+  { list: [{ id: "ws-1", name: "Main" }], active: "ws-1" },
   "ek.workspaces",
 );
+
+/** One layout only. Older saves may still list Session and Prep. */
+function keepActiveWorkspace(state: WorkspacesState): WorkspacesState {
+  const current = state.list.find((item) => item.id === state.active) ?? state.list[0];
+  const kept = current ?? { id: "ws-1", name: "Main" };
+  return { list: [kept], active: kept.id };
+}
+
+const loadedWorkspaces = workspacesStore.get();
+const singleWorkspace = keepActiveWorkspace(loadedWorkspaces);
+if (
+  loadedWorkspaces.list.length !== 1 ||
+  loadedWorkspaces.active !== singleWorkspace.active ||
+  loadedWorkspaces.list[0]?.id !== singleWorkspace.list[0].id
+) {
+  workspacesStore.set(singleWorkspace);
+}
 
 export const presetsStore = createStore<{ items: { name: string; snapshot: LayoutSnapshot }[] }>({ items: [] }, "ek.presets");
 

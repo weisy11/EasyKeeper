@@ -7,7 +7,7 @@ const dict = {
   "ws.rename": { zh: "重命名", en: "Rename" },
   "ws.delete": { zh: "删除工作区", en: "Delete workspace" },
   "ws.reset": { zh: "重置为内置默认", en: "Reset to built-in default" },
-  "cmd.search": { zh: "搜索工具、命令、工作区…", en: "Search tools, commands, workspaces…" },
+  "cmd.search": { zh: "搜索工具、命令…", en: "Search tools, commands…" },
   "cmd.tools": { zh: "工具（打开或聚焦）", en: "Tools (open or focus)" },
   "cmd.commands": { zh: "命令", en: "Commands" },
   "cmd.workspaces": { zh: "工作区", en: "Workspaces" },

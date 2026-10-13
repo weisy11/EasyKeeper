@@ -473,6 +473,13 @@ export function SceneNav({
               showChildren();
               setHint(null);
             }}
+            onClick={(event) => {
+              if ((event.target as HTMLElement).closest("[data-row-action]")) return;
+              if (event.shiftKey) {
+                event.preventDefault();
+                chooseRange(node.id);
+              } else chooseOne(node.id);
+            }}
             onContextMenu={(event) => {
               event.preventDefault();
               setMenu({ id: node.id, x: event.clientX, y: event.clientY });
@@ -487,9 +494,13 @@ export function SceneNav({
             <button
               type="button"
               aria-expanded={node.children.length > 0 ? expanded : undefined}
-              className={`grid size-4 shrink-0 place-items-center ${node.children.length === 0 ? "invisible" : ""}`}
+              data-row-action=""
+              className={`grid size-4 shrink-0 place-items-center ${node.children.length === 0 ? "invisible pointer-events-none" : ""}`}
               onMouseDown={(event) => event.stopPropagation()}
-              onClick={() => setOpenIds((ids) => (ids.includes(node.id) ? ids.filter((item) => item !== node.id) : [...ids, node.id]))}
+              onClick={(event) => {
+                event.stopPropagation();
+                setOpenIds((ids) => (ids.includes(node.id) ? ids.filter((item) => item !== node.id) : [...ids, node.id]));
+              }}
             >
               <ChevronRight className={`size-3.5 transition-transform ${expanded ? "rotate-90" : ""}`} />
             </button>
@@ -507,17 +518,7 @@ export function SceneNav({
                 onBlur={(event) => void rename(node.id, event.currentTarget.value).catch(reportDbError)}
               />
             ) : (
-              <button
-                type="button"
-                className="min-w-0 flex-1 truncate text-left"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (event.shiftKey) {
-                    event.preventDefault();
-                    chooseRange(node.id);
-                  } else chooseOne(node.id);
-                }}
-              >
+              <button type="button" className="min-w-0 flex-1 truncate text-left">
                 {title}
               </button>
             )}
@@ -525,18 +526,24 @@ export function SceneNav({
               <button
                 type="button"
                 title={t("addChildScene")}
+                data-row-action=""
                 className="grid size-5 place-items-center rounded hover:bg-background"
                 onMouseDown={(event) => event.stopPropagation()}
-                onClick={() => addNode(node.id, "scene")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void addNode(node.id, "scene");
+                }}
               >
                 <Plus className="size-3.5" />
               </button>
               <button
                 type="button"
                 title={t("more")}
+                data-row-action=""
                 className="grid size-5 place-items-center rounded hover:bg-background"
                 onMouseDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
+                  event.stopPropagation();
                   const bounds = event.currentTarget.getBoundingClientRect();
                   setMenu({ id: node.id, x: bounds.left, y: bounds.bottom + 4 });
                 }}
