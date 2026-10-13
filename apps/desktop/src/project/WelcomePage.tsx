@@ -101,6 +101,7 @@ export function WelcomePage() {
   const { locale } = useStore(settingsStore);
   const recent = useStore(recentStore);
   const [roots, setRoots] = useState<Roots | null>(null);
+  const [rootsError, setRootsError] = useState<string | null>(null);
   const [view, setView] = useState<View>({ name: "home" });
   const [projectName, setProjectName] = useState("");
   const [parent, setParent] = useState("");
@@ -123,10 +124,17 @@ export function WelcomePage() {
         return { docs, library, home: splitProjectPath(docs)?.parent ?? null };
       })
       .then((next) => {
-        if (!cancelled) setRoots(next);
+        if (!cancelled) {
+          setRoots(next);
+          setRootsError(null);
+        }
       })
-      .catch(() => {
-        if (!cancelled) setRoots(null);
+      .catch((caught: unknown) => {
+        if (!cancelled) {
+          setRoots(null);
+          const text = caught instanceof Error ? caught.message : String(caught);
+          setRootsError(text);
+        }
       });
     return () => {
       cancelled = true;
@@ -339,6 +347,7 @@ export function WelcomePage() {
               <Action icon={BOOK} title={tr("welcome.runWithScenario")} hint={tr("welcome.runWithScenarioHint")} testId="run-with-scenario" disabled={busy || !roots} onClick={() => void startPicker("pick-scenario")} />
               <Action icon={ARROW} title={tr("welcome.justRun")} hint={tr("welcome.justRunHint")} testId="just-run" disabled={busy || !roots} onClick={() => void startCreate("record", "home", null)} />
               <Action icon={HISTORY} title={tr("welcome.continueGame")} hint={tr("welcome.continueGameHint")} testId="continue-game" disabled={busy || !roots} onClick={() => void startPicker("pick-record")} />
+              {rootsError && <p className="err" data-welcome-error>{tr("welcome.error.generic", { message: rootsError })}</p>}
             </div>
           </div>
         )}

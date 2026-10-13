@@ -6,6 +6,7 @@ use geometry::{MainWindowState, Rect};
 use snapshot::{create_project_snapshot, delete_project_snapshot, list_project_snapshots};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tauri::webview::NewWindowResponse;
@@ -166,9 +167,21 @@ fn project_db_query(project_path: String, tool_prefix: String, sql: String, para
   project_db::query(&project_path, &tool_prefix, &sql, &params.unwrap_or_default())
 }
 
+/// Linux `document_dir` fails when xdg user dirs are unset. Fall back to `$HOME/Documents` and do not create it.
+fn resolve_documents_dir(document: Option<&Path>, home: Option<&Path>) -> Result<PathBuf, String> {
+  if let Some(path) = document {
+    return Ok(path.to_path_buf());
+  }
+  home
+    .map(|path| path.join("Documents"))
+    .ok_or_else(|| "unable to determine base dir path".to_string())
+}
+
 #[tauri::command]
 fn documents_dir(app: AppHandle) -> Result<String, String> {
-  app.path().document_dir().map(|p| p.to_string_lossy().to_string()).map_err(|e| e.to_string())
+  let document = app.path().document_dir().ok();
+  let home = app.path().home_dir().ok();
+  Ok(resolve_documents_dir(document.as_deref(), home.as_deref())?.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -463,4 +476,27 @@ pub fn run() {
     })
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod documents_dir_tests {
+  use super::resolve_documents_dir;
+  use std::path::Path;
+
+  #[test]
+  fn keeps_the_system_documents_dir() {
+    let path = resolve_documents_dir(Some(Path::new("/home/keeper/Documents")), None).unwrap();
+    assert_eq!(path, Path::new("/home/keeper/Documents"));
+  }
+
+  #[test]
+  fn falls_back_to_home_documents_without_creating_it() {
+    let path = resolve_documents_dir(None, Some(Path::new("/home/keeper"))).unwrap();
+    assert_eq!(path, Path::new("/home/keeper/Documents"));
+  }
+
+  #[test]
+  fn errors_when_neither_dir_is_known() {
+    assert!(resolve_documents_dir(None, None).is_err());
+  }
 }
