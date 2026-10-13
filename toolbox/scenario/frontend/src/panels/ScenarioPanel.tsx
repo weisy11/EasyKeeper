@@ -11,6 +11,7 @@ import type { ToolPanelProps } from "@ek/tool-api";
 import { List as ListIcon, ListOrdered } from "lucide-react";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { readScenarioLocale, scenarioT, type ScenarioStringKey } from "../i18n";
+import { NpcColumn } from "./NpcColumn";
 import { SceneNav } from "./SceneNav";
 import { loadImageObjectUrl, readPage, savePastedImage, writePage } from "../storage";
 import "../editor.css";
@@ -455,8 +456,7 @@ export function ScenarioPanel({ projectPath }: ToolPanelProps) {
         </section>
 
         <section className="flex min-h-0 min-w-0 flex-col bg-background">
-          <Header>{t("npcs")}</Header>
-          <List items={[t("person1"), t("person2"), t("monster1")]} />
+          <NpcColumn locale={locale} projectPath={projectPath} selected={selected} />
         </section>
 
         <section className="flex min-h-0 min-w-0 flex-col bg-background">

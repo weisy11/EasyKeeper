@@ -1,6 +1,7 @@
 import { ChevronRight, FileText, MoreHorizontal, Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { createScenarioNode, deleteScenarioNode, duplicateScenarioNode, loadScenarioForest, placeScenarioNodes, projectDatabaseAvailable, renameScenarioNode, TRASH_ID, type ScenarioTreeNode } from "../db";
+import { publishSceneCatalog } from "../sceneLinks";
 import { scenarioT, type ScenarioLocale, type ScenarioStringKey } from "../i18n";
 import { appendBlockToTrash, moveBlock, siblingRange, type Place } from "./navMove";
 
@@ -215,15 +216,28 @@ export function SceneNav({
   const splitDrag = useRef<{ pointerId: number; startY: number; startRatio: number; height: number } | null>(null);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
+  const catalogReady = useRef(!usingDb);
+
+  useEffect(() => {
+    if (!catalogReady.current) return;
+    publishSceneCatalog({
+      nodes: nodes.map((node) => toTree(node, locale)),
+      trash: trash.map((node) => toTree(node, locale)),
+      ready: true,
+    });
+  }, [nodes, trash, locale]);
 
   useEffect(() => {
     if (!usingDb) return;
     let cancelled = false;
+    catalogReady.current = false;
+    publishSceneCatalog({ nodes: [], trash: [], ready: false });
     setDbError(false);
     void loadScenarioForest(projectPath).then(({ nodes: tree, trash: bin }) => {
       if (cancelled) return;
       const next = tree.map(fromTree);
       const nextTrash = bin.map(fromTree);
+      catalogReady.current = true;
       setNodes(next);
       setTrash(nextTrash);
       const visible = next.some((node) => contains(node, selectedRef.current)) || nextTrash.some((node) => contains(node, selectedRef.current));
