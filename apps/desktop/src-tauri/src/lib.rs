@@ -357,6 +357,8 @@ fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
           &PredefinedMenuItem::quit(app, None)?,
         ],
       )?,
+      #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
+      &Submenu::with_items(app, "File", true, &[&close_project])?,
       &Submenu::with_items(
         app,
         "Edit",
