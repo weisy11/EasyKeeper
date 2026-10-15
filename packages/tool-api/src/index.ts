@@ -8,6 +8,11 @@ export type ToolPanelProps = {
   panelId: string;
   /** Open project directory. Empty when no project is open. */
   projectPath: string;
+  /** Scenario directory for a game record. Empty in prep. */
+  modulePath?: string | null;
+  mode?: "prep" | "play";
+  /** Play mode writes the scenario only while this is on. Prep ignores it. */
+  moduleEditable?: boolean;
 };
 
 export type ToolPanelDef = {

@@ -1,15 +1,22 @@
 import { DicesIcon, Filter, ImagePlus, Plus, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
-import { derive, rollCharacteristics, type Characteristics } from "../cocSheet";
+import { applyActorArticles, publishActorIndex, publishArticles, readArticles, subscribeArticles } from "../articleStore";
+import { derive, rollCharacteristics, type Characteristics, type Derived } from "../cocSheet";
 import {
   ensureScenarioSchema,
   insertScenarioActor,
   loadScenarioActors,
+  deleteScenarioActor,
+  loadScenarioArticles,
   projectDatabaseAvailable,
+  setActorArticles,
+  setScenarioActorTrashed,
   updateScenarioActor,
   type ScenarioActor,
+  type ScenarioArticle,
 } from "../db";
 import { scenarioT, type ScenarioLocale, type ScenarioStringKey } from "../i18n";
+import { ListTrash } from "./ListTrash";
 import { presentSceneIds, readSceneCatalog, sceneLinkRows, subscribeSceneCatalog, type SceneCatalog } from "../sceneLinks";
 import { loadImageObjectUrl, savePastedImage } from "../storage";
 
@@ -38,6 +45,8 @@ export function NpcColumn({ locale, projectPath, selected }: { locale: ScenarioL
   const t = (key: ScenarioStringKey) => scenarioT(locale, key);
   const [actors, setActors] = useState<Actor[]>([]);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [rowMenu, setRowMenu] = useState<{ id: string; trashed: boolean; x: number; y: number } | null>(null);
+  const [trashOpen, setTrashOpen] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
   const [linkedOnly, setLinkedOnly] = useState(false);
@@ -62,29 +71,100 @@ export function NpcColumn({ locale, projectPath, selected }: { locale: ScenarioL
   }, [projectPath, usingDb]);
 
   useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(null);
+    publishActorIndex(actors.map((actor) => ({ id: actor.id, name: actor.name, kind: actor.kind, trashed: actor.trashed })));
+  }, [actors]);
+
+  useEffect(() => {
+    if (!menu && !rowMenu) return;
+    const close = () => {
+      setMenu(null);
+      setRowMenu(null);
+    };
     window.addEventListener("pointerdown", close);
     return () => window.removeEventListener("pointerdown", close);
-  }, [menu]);
+  }, [menu, rowMenu]);
 
   function openForm(kind: Kind) {
     setMenu(null);
     setDraft({ kind, actor: null });
   }
 
-  async function save(actor: Actor) {
+  async function save(actor: Actor, articleIds: string[]) {
     if (usingDb) {
       await ensureScenarioSchema(projectPath);
       if (draft?.actor) await updateScenarioActor(projectPath, actor);
       else await insertScenarioActor(projectPath, actor);
+      await setActorArticles(projectPath, actor.id, articleIds);
       setActors(await loadScenarioActors(projectPath));
+      publishArticles(await loadScenarioArticles(projectPath));
     } else if (draft?.actor) {
       setActors((items) => items.map((item) => (item.id === actor.id ? actor : item)));
+      publishArticles(applyActorArticles(readArticles(), actor.id, articleIds));
     } else {
       setActors((items) => [...items, actor]);
+      publishArticles(applyActorArticles(readArticles(), actor.id, articleIds));
     }
     setDraft(null);
+  }
+
+  async function moveActor(id: string, trashed: boolean) {
+    setRowMenu(null);
+    if (trashed) setTrashOpen(true);
+    if (usingDb) {
+      await setScenarioActorTrashed(projectPath, id, trashed);
+      setActors(await loadScenarioActors(projectPath));
+    } else {
+      setActors((items) => items.map((item) => (item.id === id ? { ...item, trashed } : item)));
+    }
+  }
+
+  async function purgeActor(id: string) {
+    setRowMenu(null);
+    if (draft?.actor?.id === id) setDraft(null);
+    if (usingDb) {
+      await deleteScenarioActor(projectPath, id);
+      setActors(await loadScenarioActors(projectPath));
+      publishArticles(await loadScenarioArticles(projectPath));
+    } else {
+      setActors((items) => items.filter((item) => item.id !== id));
+      publishArticles(readArticles().map((item) => ({ ...item, actors: item.actors.filter((actorId) => actorId !== id) })));
+    }
+  }
+
+  function renderActor(actor: Actor) {
+    return (
+      <div
+        key={actor.id}
+        data-actor={actor.kind}
+        data-trashed={actor.trashed ? "true" : "false"}
+        data-selected={picked === actor.id ? "true" : "false"}
+        draggable
+        onDragStart={(event) => {
+          event.dataTransfer.setData("text/plain", actor.id);
+          event.dataTransfer.effectAllowed = "move";
+        }}
+        className={`flex h-7 cursor-default select-none items-center gap-2 px-2.5 ${picked === actor.id ? "bg-[#2563eb]/20 shadow-[inset_2px_0_0_#2563eb] dark:bg-[#60a5fa]/25 dark:shadow-[inset_2px_0_0_#60a5fa]" : "hover:bg-muted"}`}
+        onClick={(event) => {
+          if (event.detail > 1) {
+            setPicked(actor.id);
+            return;
+          }
+          setPicked((current) => (current === actor.id ? null : actor.id));
+        }}
+        onDoubleClick={() => {
+          setPicked(actor.id);
+          setDraft({ kind: actor.kind, actor });
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setRowMenu({ id: actor.id, trashed: actor.trashed, x: event.clientX, y: event.clientY });
+        }}
+      >
+        {actor.portrait ? <StoredPortrait projectPath={projectPath} src={actor.portrait} className="size-6 shrink-0 rounded-full object-cover" /> : null}
+        <span className="min-w-0 flex-1 truncate">{actor.name}</span>
+        <span className="shrink-0 text-[11px] text-muted-foreground">{actor.kind === "npc" ? "NPC" : t("monster")}</span>
+      </div>
+    );
   }
 
   return (
@@ -114,31 +194,21 @@ export function NpcColumn({ locale, projectPath, selected }: { locale: ScenarioL
           <Plus className="size-3.5" />
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto py-1">
-        {(linkedOnly ? actors.filter((actor) => selected !== "" && actor.links.includes(selected)) : actors).map((actor) => (
-          <div
-            key={actor.id}
-            data-actor={actor.kind}
-            data-selected={picked === actor.id ? "true" : "false"}
-            className={`flex h-7 cursor-default select-none items-center gap-2 px-2.5 ${picked === actor.id ? "bg-[#2563eb]/20 shadow-[inset_2px_0_0_#2563eb] dark:bg-[#60a5fa]/25 dark:shadow-[inset_2px_0_0_#60a5fa]" : "hover:bg-muted"}`}
-            onClick={(event) => {
-              if (event.detail > 1) {
-                setPicked(actor.id);
-                return;
-              }
-              setPicked((current) => (current === actor.id ? null : actor.id));
-            }}
-            onDoubleClick={() => {
-              setPicked(actor.id);
-              setDraft({ kind: actor.kind, actor });
-            }}
-          >
-            {actor.portrait ? <StoredPortrait projectPath={projectPath} src={actor.portrait} className="size-6 shrink-0 rounded-full object-cover" /> : null}
-            <span className="min-w-0 flex-1 truncate">{actor.name}</span>
-            <span className="shrink-0 text-[11px] text-muted-foreground">{actor.kind === "npc" ? "NPC" : t("monster")}</span>
-          </div>
-        ))}
+      <div
+        className="min-h-0 flex-1 overflow-auto py-1"
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault();
+          const id = event.dataTransfer.getData("text/plain");
+          const actor = actors.find((item) => item.id === id);
+          if (actor?.trashed) void moveActor(id, false);
+        }}
+      >
+        {(linkedOnly ? actors.filter((actor) => !actor.trashed && selected !== "" && actor.links.includes(selected)) : actors.filter((actor) => !actor.trashed)).map((actor) => renderActor(actor))}
       </div>
+      <ListTrash title={t("trash")} open={trashOpen} onToggle={() => setTrashOpen((open) => !open)} onReceive={(id) => void moveActor(id, true)}>
+        {actors.filter((actor) => actor.trashed).map((actor) => renderActor(actor))}
+      </ListTrash>
       {menu && (
         <div
           data-npc-menu=""
@@ -154,6 +224,22 @@ export function NpcColumn({ locale, projectPath, selected }: { locale: ScenarioL
           </button>
         </div>
       )}
+      {rowMenu && (
+        <div
+          data-actor-menu=""
+          className="fixed z-30 min-w-36 rounded-md border border-border bg-popover py-1 text-[13px] text-popover-foreground shadow-md"
+          style={{ left: rowMenu.x, top: rowMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="block w-full px-3 py-1 text-left text-destructive hover:bg-accent"
+            onClick={() => void (rowMenu.trashed ? purgeActor(rowMenu.id) : moveActor(rowMenu.id, true))}
+          >
+            {rowMenu.trashed ? t("deleteNode") : t("moveToTrash")}
+          </button>
+        </div>
+      )}
       {draft && (
         <ActorDialog
           key={draft.actor?.id ?? `new-${draft.kind}`}
@@ -164,7 +250,7 @@ export function NpcColumn({ locale, projectPath, selected }: { locale: ScenarioL
           selected={selected}
           titleId={titleId}
           onCancel={() => setDraft(null)}
-          onSave={(actor) => void save(actor)}
+          onSave={(actor, articleIds) => void save(actor, articleIds)}
         />
       )}
     </div>
@@ -188,7 +274,7 @@ function ActorDialog({
   selected: string;
   titleId: string;
   onCancel: () => void;
-          onSave: (actor: Actor) => void | Promise<void>;
+          onSave: (actor: Actor, articleIds: string[]) => void | Promise<void>;
 }) {
   const t = (key: ScenarioStringKey) => scenarioT(locale, key);
   const [name, setName] = useState(actor?.name ?? "");
@@ -207,9 +293,12 @@ function ActorDialog({
   const [attacks, setAttacks] = useState<AttackDraft[]>(() => (actor?.attacks ?? []).map(attackDraft));
   const [catalog, setCatalog] = useState<SceneCatalog>(readSceneCatalog);
   const [linked, setLinked] = useState<string[]>(() => (actor ? actor.links : selected ? [selected] : []));
+  const [articles, setArticles] = useState<ScenarioArticle[]>(readArticles);
+  const [articleIds, setArticleIds] = useState<string[]>(() => (actor ? readArticles().filter((item) => item.actors.includes(actor.id)).map((item) => item.id) : []));
   const [saveFailed, setSaveFailed] = useState(false);
 
   useEffect(() => subscribeSceneCatalog(setCatalog), []);
+  useEffect(() => subscribeArticles(setArticles), []);
 
   useEffect(() => {
     if (!catalog.ready) return;
@@ -269,7 +358,8 @@ function ActorDialog({
           note: attack.note.trim(),
         })),
         links: savedLinks(catalog, linked),
-      }),
+        trashed: actor?.trashed ?? false,
+      }, articleIds),
     ).catch((error: unknown) => {
       console.error(error);
       setSaveFailed(true);
@@ -330,17 +420,25 @@ function ActorDialog({
                   />
                   <span>{row.title}</span>
                 </label>
-                {row.trashed ? (
-                  <button
-                    type="button"
-                    title={t("removeSceneLink")}
-                    aria-label={t("removeSceneLink")}
-                    className="grid size-6 shrink-0 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-                    onClick={() => setLinked((current) => current.filter((id) => id !== row.id))}
-                  >
-                    <X className="size-3.5" />
-                  </button>
-                ) : null}
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className={className}>
+          <h3 className="mb-2 text-xs text-muted-foreground">{t("clues")}</h3>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {articles.filter((item) => !item.trashed || articleIds.includes(item.id)).map((item) => (
+              <div key={item.id} data-article-link={item.id} data-trashed={item.trashed ? "true" : "false"} className="flex max-w-full shrink-0 items-center gap-1">
+                <label className={`flex min-w-0 items-center gap-1.5 ${item.trashed ? "text-muted-foreground opacity-60" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={articleIds.includes(item.id)}
+                    className="size-3.5 shrink-0"
+                    onChange={(event) => setArticleIds((current) => (event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id)))}
+                  />
+                  <span>{item.name}</span>
+                  <span className="text-[11px] text-muted-foreground">{item.kind === "clue" ? t("clue") : t("item")}</span>
+                </label>
               </div>
             ))}
           </div>

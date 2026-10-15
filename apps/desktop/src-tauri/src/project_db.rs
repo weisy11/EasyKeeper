@@ -41,6 +41,19 @@ pub fn query(project_path: &str, tool_prefix: &str, sql: &str, params: &[Value])
     })
 }
 
+/// Drop open connections so the files can be closed when a project is left.
+pub fn close_connections(paths: &[String]) {
+    let Ok(mut guard) = CONNECTIONS.lock() else {
+        return;
+    };
+    let Some(connections) = guard.as_mut() else {
+        return;
+    };
+    for path in paths {
+        connections.remove(path);
+    }
+}
+
 fn with_connection<T>(project_path: &str, tool_prefix: &str, body: impl FnOnce(&Connection) -> Result<T, String>) -> Result<T, String> {
     if !valid_prefix(tool_prefix) {
         return Err("invalid tool prefix".into());

@@ -87,7 +87,8 @@ const SCHEMA = [
     backstory TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
     native_language TEXT NOT NULL DEFAULT '',
-    position INTEGER NOT NULL
+    position INTEGER NOT NULL,
+    trashed INTEGER NOT NULL DEFAULT 0
   )`,
   `CREATE TABLE IF NOT EXISTS ek_scenario_actor_skill (
     actor_id TEXT NOT NULL REFERENCES ek_scenario_actor(id),
@@ -111,6 +112,39 @@ const SCHEMA = [
     node_id TEXT NOT NULL REFERENCES ek_scenario_node(id) ON DELETE CASCADE,
     PRIMARY KEY (actor_id, node_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS ek_scenario_map (
+    id TEXT PRIMARY KEY,
+    src TEXT NOT NULL,
+    position INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS ek_scenario_map_link (
+    map_id TEXT NOT NULL REFERENCES ek_scenario_map(id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL REFERENCES ek_scenario_node(id) ON DELETE CASCADE,
+    PRIMARY KEY (map_id, node_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS ek_scenario_article (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('clue', 'item')),
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    trashed INTEGER NOT NULL DEFAULT 0
+  )`,
+  `CREATE TABLE IF NOT EXISTS ek_scenario_article_scene (
+    article_id TEXT NOT NULL REFERENCES ek_scenario_article(id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL REFERENCES ek_scenario_node(id) ON DELETE CASCADE,
+    PRIMARY KEY (article_id, node_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS ek_scenario_article_actor (
+    article_id TEXT NOT NULL REFERENCES ek_scenario_article(id) ON DELETE CASCADE,
+    actor_id TEXT NOT NULL REFERENCES ek_scenario_actor(id) ON DELETE CASCADE,
+    PRIMARY KEY (article_id, actor_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS ek_scenario_node_lock (
+    node_id TEXT NOT NULL REFERENCES ek_scenario_node(id) ON DELETE CASCADE,
+    article_id TEXT NOT NULL REFERENCES ek_scenario_article(id) ON DELETE CASCADE,
+    PRIMARY KEY (node_id, article_id)
+  )`,
   `INSERT INTO ek_scenario_schema (version)
    SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ek_scenario_schema)`,
 ];
@@ -128,6 +162,8 @@ export async function ensureScenarioSchema(projectPath: string) {
   for (const sql of SCHEMA) await exec(projectPath, sql);
   await migrateNodeTable(projectPath);
   await migrateActorColumns(projectPath);
+  await migrateTrashedFlag(projectPath, "ek_scenario_actor");
+  await migrateTrashedFlag(projectPath, "ek_scenario_article");
   await exec(
     projectPath,
     `INSERT INTO ek_scenario_node (id, parent_id, kind, title, position, body_file)
@@ -138,6 +174,12 @@ export async function ensureScenarioSchema(projectPath: string) {
 }
 
 const ACTOR_TEXT_COLUMNS = ["appearance", "portrayal", "backstory", "notes", "native_language"] as const;
+
+async function migrateTrashedFlag(projectPath: string, table: string) {
+  const rows = await query<{ name: string }>(projectPath, `PRAGMA table_info(${table})`);
+  if (rows.some((row) => row.name === "trashed")) return;
+  await exec(projectPath, `ALTER TABLE ${table} ADD COLUMN trashed INTEGER NOT NULL DEFAULT 0`);
+}
 
 async function migrateActorColumns(projectPath: string) {
   const rows = await query<{ name: string }>(projectPath, "PRAGMA table_info(ek_scenario_actor)");
@@ -288,6 +330,24 @@ export async function loadScenarioTree(projectPath: string): Promise<ScenarioTre
   return loadUnder(projectPath, null);
 }
 
+export async function loadNodeLocks(projectPath: string): Promise<Record<string, string[]>> {
+  const rows = await query<{ node_id: string; article_id: string }>(projectPath, "SELECT node_id, article_id FROM ek_scenario_node_lock");
+  const locks: Record<string, string[]> = {};
+  for (const row of rows) {
+    const list = locks[row.node_id] ?? [];
+    list.push(row.article_id);
+    locks[row.node_id] = list;
+  }
+  return locks;
+}
+
+export async function setNodeLocks(projectPath: string, nodeId: string, articleIds: string[]) {
+  await exec(projectPath, "DELETE FROM ek_scenario_node_lock WHERE node_id = ?1", [nodeId]);
+  for (const articleId of articleIds) {
+    await exec(projectPath, "INSERT INTO ek_scenario_node_lock (node_id, article_id) VALUES (?1, ?2)", [nodeId, articleId]);
+  }
+}
+
 export async function loadScenarioForest(projectPath: string): Promise<{ nodes: ScenarioTreeNode[]; trash: ScenarioTreeNode[] }> {
   await ensureScenarioSchema(projectPath);
   return { nodes: await loadUnder(projectPath, null), trash: await loadUnder(projectPath, TRASH_ID) };
@@ -377,6 +437,7 @@ export type ScenarioActor = {
   skills: ScenarioSkill[];
   attacks: ScenarioAttack[];
   links: string[];
+  trashed: boolean;
 };
 
 type ActorRow = {
@@ -407,6 +468,7 @@ type ActorRow = {
   backstory: string;
   notes: string;
   native_language: string;
+  trashed: number;
 };
 
 type SkillRow = { actor_id: string; name: string; value: number };
@@ -449,6 +511,7 @@ function actorFromRow(row: ActorRow, skills: ScenarioSkill[], attacks: ScenarioA
     skills,
     attacks,
     links,
+    trashed: row.trashed === 1,
   };
 }
 
@@ -493,7 +556,7 @@ export async function loadScenarioActors(projectPath: string): Promise<ScenarioA
   await ensureScenarioSchema(projectPath);
   const rows = await query<ActorRow>(
     projectPath,
-    `SELECT ${ACTOR_COLUMNS} FROM ek_scenario_actor ORDER BY position`,
+    `SELECT ${ACTOR_COLUMNS}, trashed FROM ek_scenario_actor ORDER BY position`,
   );
   const skillRows = await query<SkillRow>(
     projectPath,
@@ -605,6 +668,153 @@ async function writeActorAttacks(projectPath: string, actor: ScenarioActor) {
       "INSERT INTO ek_scenario_actor_attack (actor_id, position, name, chance, damage, uses, note) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
       [actor.id, index, attack.name, attack.chance, attack.damage, attack.uses, attack.note],
     );
+  }
+}
+
+export type ScenarioMap = { id: string; src: string; position: number; links: string[] };
+
+export async function loadScenarioMaps(projectPath: string): Promise<ScenarioMap[]> {
+  const rows = await query<{ id: string; src: string; position: number }>(
+    projectPath,
+    "SELECT id, src, position FROM ek_scenario_map ORDER BY position, id",
+  );
+  const links = await query<{ map_id: string; node_id: string }>(projectPath, "SELECT map_id, node_id FROM ek_scenario_map_link");
+  const byMap = new Map<string, string[]>();
+  for (const link of links) {
+    const list = byMap.get(link.map_id) ?? [];
+    list.push(link.node_id);
+    byMap.set(link.map_id, list);
+  }
+  return rows.map((row) => ({ id: row.id, src: row.src, position: row.position, links: byMap.get(row.id) ?? [] }));
+}
+
+export async function insertScenarioMap(projectPath: string, map: ScenarioMap) {
+  await exec(projectPath, "INSERT INTO ek_scenario_map (id, src, position) VALUES (?1, ?2, ?3)", [map.id, map.src, map.position]);
+  await writeMapLinks(projectPath, map.id, map.links);
+}
+
+async function writeMapLinks(projectPath: string, mapId: string, links: string[]) {
+  await exec(projectPath, "DELETE FROM ek_scenario_map_link WHERE map_id = ?1", [mapId]);
+  for (const nodeId of links) {
+    await exec(projectPath, "INSERT INTO ek_scenario_map_link (map_id, node_id) VALUES (?1, ?2)", [mapId, nodeId]);
+  }
+}
+
+export async function updateScenarioMapLinks(projectPath: string, mapId: string, links: string[]) {
+  await writeMapLinks(projectPath, mapId, links);
+}
+
+export async function updateScenarioMapSrc(projectPath: string, id: string, src: string) {
+  await exec(projectPath, "UPDATE ek_scenario_map SET src = ?1 WHERE id = ?2", [src, id]);
+}
+
+export async function deleteScenarioMap(projectPath: string, id: string) {
+  await exec(projectPath, "DELETE FROM ek_scenario_map WHERE id = ?1", [id]);
+}
+
+export async function orderScenarioMaps(projectPath: string, ids: string[]) {
+  for (let index = 0; index < ids.length; index += 1) {
+    await exec(projectPath, "UPDATE ek_scenario_map SET position = ?1 WHERE id = ?2", [index, ids[index]]);
+  }
+}
+
+export type ScenarioArticle = {
+  id: string;
+  kind: "clue" | "item";
+  name: string;
+  description: string;
+  position: number;
+  scenes: string[];
+  actors: string[];
+  trashed: boolean;
+};
+
+export async function loadScenarioArticles(projectPath: string): Promise<ScenarioArticle[]> {
+  const rows = await query<{ id: string; kind: string; name: string; description: string; position: number; trashed: number }>(
+    projectPath,
+    "SELECT id, kind, name, description, position, trashed FROM ek_scenario_article ORDER BY position, id",
+  );
+  const scenes = await query<{ article_id: string; node_id: string }>(projectPath, "SELECT article_id, node_id FROM ek_scenario_article_scene");
+  const actors = await query<{ article_id: string; actor_id: string }>(projectPath, "SELECT article_id, actor_id FROM ek_scenario_article_actor");
+  const scenesByArticle = groupIds(scenes, "article_id", "node_id");
+  const actorsByArticle = groupIds(actors, "article_id", "actor_id");
+  return rows.map((row) => ({
+    id: row.id,
+    kind: row.kind === "item" ? "item" : "clue",
+    name: row.name,
+    description: row.description,
+    position: row.position,
+    scenes: scenesByArticle.get(row.id) ?? [],
+    actors: actorsByArticle.get(row.id) ?? [],
+    trashed: row.trashed === 1,
+  }));
+}
+
+export async function setScenarioActorTrashed(projectPath: string, id: string, trashed: boolean) {
+  await exec(projectPath, "UPDATE ek_scenario_actor SET trashed = ?1 WHERE id = ?2", [trashed ? 1 : 0, id]);
+}
+
+export async function deleteScenarioActor(projectPath: string, id: string) {
+  await exec(projectPath, "DELETE FROM ek_scenario_actor_skill WHERE actor_id = ?1", [id]);
+  await exec(projectPath, "DELETE FROM ek_scenario_actor_attack WHERE actor_id = ?1", [id]);
+  await exec(projectPath, "DELETE FROM ek_scenario_actor_link WHERE actor_id = ?1", [id]);
+  await exec(projectPath, "DELETE FROM ek_scenario_article_actor WHERE actor_id = ?1", [id]);
+  await exec(projectPath, "DELETE FROM ek_scenario_actor WHERE id = ?1", [id]);
+}
+
+export async function setScenarioArticleTrashed(projectPath: string, id: string, trashed: boolean) {
+  await exec(projectPath, "UPDATE ek_scenario_article SET trashed = ?1 WHERE id = ?2", [trashed ? 1 : 0, id]);
+}
+
+export async function deleteScenarioArticle(projectPath: string, id: string) {
+  await exec(projectPath, "DELETE FROM ek_scenario_article WHERE id = ?1", [id]);
+}
+
+function groupIds<T extends Record<string, string>>(rows: T[], parentKey: keyof T, childKey: keyof T) {
+  const grouped = new Map<string, string[]>();
+  for (const row of rows) {
+    const parent = row[parentKey];
+    const list = grouped.get(parent) ?? [];
+    list.push(row[childKey]);
+    grouped.set(parent, list);
+  }
+  return grouped;
+}
+
+export async function insertScenarioArticle(projectPath: string, article: ScenarioArticle) {
+  await exec(
+    projectPath,
+    "INSERT INTO ek_scenario_article (id, kind, name, description, position) VALUES (?1, ?2, ?3, ?4, ?5)",
+    [article.id, article.kind, article.name, article.description, article.position],
+  );
+  await writeArticleScenes(projectPath, article.id, article.scenes);
+  await writeArticleActors(projectPath, article.id, article.actors);
+}
+
+export async function updateScenarioArticle(projectPath: string, article: ScenarioArticle) {
+  await exec(projectPath, "UPDATE ek_scenario_article SET name = ?1, description = ?2 WHERE id = ?3", [article.name, article.description, article.id]);
+  await writeArticleScenes(projectPath, article.id, article.scenes);
+  await writeArticleActors(projectPath, article.id, article.actors);
+}
+
+export async function setActorArticles(projectPath: string, actorId: string, articleIds: string[]) {
+  await exec(projectPath, "DELETE FROM ek_scenario_article_actor WHERE actor_id = ?1", [actorId]);
+  for (const articleId of articleIds) {
+    await exec(projectPath, "INSERT INTO ek_scenario_article_actor (article_id, actor_id) VALUES (?1, ?2)", [articleId, actorId]);
+  }
+}
+
+async function writeArticleScenes(projectPath: string, articleId: string, scenes: string[]) {
+  await exec(projectPath, "DELETE FROM ek_scenario_article_scene WHERE article_id = ?1", [articleId]);
+  for (const nodeId of scenes) {
+    await exec(projectPath, "INSERT INTO ek_scenario_article_scene (article_id, node_id) VALUES (?1, ?2)", [articleId, nodeId]);
+  }
+}
+
+async function writeArticleActors(projectPath: string, articleId: string, actors: string[]) {
+  await exec(projectPath, "DELETE FROM ek_scenario_article_actor WHERE article_id = ?1", [articleId]);
+  for (const actorId of actors) {
+    await exec(projectPath, "INSERT INTO ek_scenario_article_actor (article_id, actor_id) VALUES (?1, ?2)", [articleId, actorId]);
   }
 }
 

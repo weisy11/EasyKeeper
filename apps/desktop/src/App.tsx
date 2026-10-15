@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { Component, useEffect, useState, type ReactNode } from "react";
 import {
   DockviewReact,
@@ -52,10 +53,12 @@ import { appLog, chromeStore, settingsStore, useStore } from "./lib/store";
 import { t, translate, useL, useT, type I18nKey } from "./lib/i18n";
 import { WelcomePage } from "./project/WelcomePage";
 import { ProjectSnapshots } from "./project/ProjectSnapshots";
+import { closeOpenProject } from "./project/closeProject";
+import { rememberSession } from "./project/launchSession";
 import { sessionStore } from "./project/sessionStore";
 
 const kw = (...keys: I18nKey[]) => keys.flatMap((k) => [translate("zh", k), translate("en", k)]).join(" ");
-import { openTextFile, saveTextFile, log, setWelcomeWindow } from "./lib/platform";
+import { openTextFile, saveTextFile, log, setWelcomeWindow, isTauri } from "./lib/platform";
 import {
   EDGES,
   activeController,
@@ -164,7 +167,7 @@ function ToolPanel(props: IDockviewPanelProps<{ toolId: string }>) {
 
   return (
     <PanelErrorBoundary>
-      <C panelId={toolId} projectPath={session?.projectPath ?? ""} />
+      <C panelId={toolId} projectPath={session?.projectPath ?? ""} modulePath={session?.modulePath ?? null} mode={session?.mode ?? "prep"} moduleEditable={session?.moduleEditable ?? false} />
     </PanelErrorBoundary>
   );
 }
@@ -491,6 +494,7 @@ function applyPreset(snap: LayoutSnapshot, name: string) {
 function TopBar({ onTools, onSavePreset }: { onTools: () => void; onSavePreset: () => void }) {
   const tr = useT();
   const settings = useStore(settingsStore);
+  const session = useStore(sessionStore);
   const { locked } = useStore(chromeStore);
   const live = useStore(liveStore);
   const presets = useStore(presetsStore);
@@ -499,8 +503,25 @@ function TopBar({ onTools, onSavePreset }: { onTools: () => void; onSavePreset: 
   void live.tick;
   return (
     <header className="flex h-11 shrink-0 items-center gap-1 border-b border-border bg-card px-2 text-card-foreground">
-      <span className="mr-2 hidden shrink-0 whitespace-nowrap text-sm font-semibold xl:inline">{tr("app.title")}</span>
+      <span data-app-mode={session?.mode ?? "prep"} className="mr-2 shrink-0 whitespace-nowrap text-sm font-semibold">
+        {session?.mode === "play" ? tr("app.title.play") : tr("app.title.prep")}
+      </span>
       <div className="flex-1" />
+      {session?.mode === "play" && (
+        <label className="mr-2 flex items-center gap-1.5 whitespace-nowrap text-xs">
+          <span>{tr("edit.scenario")}</span>
+          <Switch
+            size="sm"
+            checked={session.moduleEditable}
+            data-module-edit=""
+            onCheckedChange={(value) => {
+              const next = { ...session, moduleEditable: value };
+              sessionStore.set(next);
+              void rememberSession(next);
+            }}
+          />
+        </label>
+      )}
       <Button variant="outline" size="sm" className="gap-2 text-muted-foreground" onClick={() => openPalette(document)} data-open-palette>
         <CommandIcon className="size-3.5" />
         <span className="hidden md:inline">{tr("cmd.search")}</span>
@@ -692,11 +713,31 @@ function DesktopApp() {
 
 export default function App() {
   const session = useStore(sessionStore);
-  const { theme } = useStore(settingsStore);
+  const { theme, locale } = useStore(settingsStore);
   const welcome = session == null;
   useEffect(() => {
     void setWelcomeWindow(welcome);
   }, [welcome]);
+  useEffect(() => {
+    if (!isTauri) return;
+    void invoke("set_close_project_label", { text: t("file.closeProject") });
+  }, [locale]);
+  useEffect(() => {
+    if (!isTauri) return;
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    void import("@tauri-apps/api/event").then(async ({ listen }) => {
+      const unlisten = await listen("ek:close-project", () => {
+        void closeOpenProject();
+      });
+      if (cancelled) unlisten();
+      else stop = unlisten;
+    });
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, []);
   if (!session) {
     return (
       <>

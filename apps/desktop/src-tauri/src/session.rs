@@ -21,6 +21,12 @@ pub struct LaunchMemory {
   session: Mutex<Option<OpenSession>>,
 }
 
+impl LaunchMemory {
+  pub fn is_open(&self) -> bool {
+    self.session.lock().map(|slot| slot.is_some()).unwrap_or(false)
+  }
+}
+
 pub fn session_if_present(slot: &mut Option<OpenSession>) -> Option<OpenSession> {
   if slot.as_ref().is_some_and(|session| !Path::new(&session.project_path).is_dir()) {
     *slot = None;
@@ -28,9 +34,27 @@ pub fn session_if_present(slot: &mut Option<OpenSession>) -> Option<OpenSession>
   slot.clone()
 }
 
+const CLOSE_PROJECT_ID: &str = "close-project";
+
+/// The item lives inside the File submenu. The top-level menu lookup does not see it.
+pub fn set_close_project_enabled(app: &tauri::AppHandle, enabled: bool) {
+  let Some(menu) = app.menu() else { return };
+  let Ok(items) = menu.items() else { return };
+  for item in items {
+    let Some(submenu) = item.as_submenu() else { continue };
+    let Some(kind) = submenu.get(CLOSE_PROJECT_ID) else { continue };
+    if let Some(entry) = kind.as_menuitem() {
+      let _ = entry.set_enabled(enabled);
+      return;
+    }
+  }
+}
+
 #[tauri::command]
-pub fn session_set(state: State<LaunchMemory>, session: Option<OpenSession>) {
+pub fn session_set(app: tauri::AppHandle, state: State<LaunchMemory>, session: Option<OpenSession>) {
+  let enabled = session.is_some();
   *state.session.lock().expect("session lock") = session;
+  set_close_project_enabled(&app, enabled);
 }
 
 #[tauri::command]

@@ -1,12 +1,15 @@
 import { settingsStore, useStore, type Locale } from "./store";
 
 const dict = {
-  "app.title": { zh: "EasyKeeper 布局沙盒", en: "EasyKeeper Layout Sandbox" },
+  "app.title.prep": { zh: "EasyKeeper 备团模式", en: "EasyKeeper Prep" },
+  "app.title.play": { zh: "EasyKeeper 跑团模式", en: "EasyKeeper Play" },
   "ws.new": { zh: "新建工作区", en: "New workspace" },
   "ws.dup": { zh: "复制当前工作区", en: "Duplicate workspace" },
   "ws.rename": { zh: "重命名", en: "Rename" },
   "ws.delete": { zh: "删除工作区", en: "Delete workspace" },
   "ws.reset": { zh: "重置为内置默认", en: "Reset to built-in default" },
+  "file.closeProject": { zh: "关闭项目", en: "Close Project" },
+  "edit.scenario": { zh: "编辑模组", en: "Edit scenario" },
   "cmd.search": { zh: "搜索工具、命令…", en: "Search tools, commands…" },
   "cmd.tools": { zh: "工具（打开或聚焦）", en: "Tools (open or focus)" },
   "cmd.commands": { zh: "命令", en: "Commands" },

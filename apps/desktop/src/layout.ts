@@ -438,6 +438,12 @@ export class WorkspaceController {
     bumpLive();
   }
 
+  /** Stop layout writes while the project view is being torn down. */
+  beginClose() {
+    this.restoring = true;
+    window.clearTimeout(this.saveTimer);
+  }
+
   scheduleSave() {
     if (this.restoring) return;
     clearTimeout(this.saveTimer);

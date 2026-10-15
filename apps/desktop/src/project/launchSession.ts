@@ -16,7 +16,7 @@ function isSession(value: unknown): value is SessionContext {
 }
 
 /** Copy the open project into the desktop process so a page reload can read it back. */
-export async function rememberSession(session: SessionContext) {
+export async function rememberSession(session: SessionContext | null) {
   if (!isTauri) return;
   await invoke("session_set", { session });
 }

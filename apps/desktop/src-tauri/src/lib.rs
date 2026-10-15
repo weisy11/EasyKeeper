@@ -11,6 +11,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID};
 use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
@@ -274,6 +275,139 @@ fn place_project(app: &AppHandle, window: &tauri::WebviewWindow) {
   }
 }
 
+const CLOSE_PROJECT_ID: &str = "close-project";
+
+fn close_project_item(app: &AppHandle) -> Option<MenuItem<tauri::Wry>> {
+  let menu = app.menu()?;
+  let items = menu.items().ok()?;
+  for item in items {
+    let Some(submenu) = item.as_submenu() else { continue };
+    let Some(kind) = submenu.get(CLOSE_PROJECT_ID) else { continue };
+    if let Some(entry) = kind.as_menuitem() {
+      return Some(entry.clone());
+    }
+  }
+  None
+}
+
+fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
+  let pkg = app.package_info();
+  let config = app.config();
+  let about = AboutMetadata {
+    name: Some(pkg.name.clone()),
+    version: Some(pkg.version.to_string()),
+    copyright: config.bundle.copyright.clone(),
+    authors: config.bundle.publisher.clone().map(|publisher| vec![publisher]),
+    ..Default::default()
+  };
+  let project_open = app.state::<LaunchMemory>().is_open();
+  let close_project = MenuItem::with_id(app, CLOSE_PROJECT_ID, "关闭项目", project_open, None::<&str>)?;
+  let window_menu = Submenu::with_id_and_items(
+    app,
+    WINDOW_SUBMENU_ID,
+    "Window",
+    true,
+    &[
+      &PredefinedMenuItem::minimize(app, None)?,
+      &PredefinedMenuItem::maximize(app, None)?,
+      #[cfg(target_os = "macos")]
+      &PredefinedMenuItem::separator(app)?,
+      &PredefinedMenuItem::close_window(app, None)?,
+    ],
+  )?;
+  let help_menu = Submenu::with_id_and_items(
+    app,
+    HELP_SUBMENU_ID,
+    "Help",
+    true,
+    &[
+      #[cfg(not(target_os = "macos"))]
+      &PredefinedMenuItem::about(app, None, Some(about.clone()))?,
+    ],
+  )?;
+  let menu = Menu::with_items(
+    app,
+    &[
+      #[cfg(target_os = "macos")]
+      &Submenu::with_items(
+        app,
+        pkg.name.clone(),
+        true,
+        &[
+          &PredefinedMenuItem::about(app, None, Some(about))?,
+          &PredefinedMenuItem::separator(app)?,
+          &PredefinedMenuItem::services(app, None)?,
+          &PredefinedMenuItem::separator(app)?,
+          &PredefinedMenuItem::hide(app, None)?,
+          &PredefinedMenuItem::hide_others(app, None)?,
+          &PredefinedMenuItem::separator(app)?,
+          &PredefinedMenuItem::quit(app, None)?,
+        ],
+      )?,
+      #[cfg(not(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd")))]
+      &Submenu::with_items(
+        app,
+        "File",
+        true,
+        &[
+          &close_project,
+          &PredefinedMenuItem::separator(app)?,
+          &PredefinedMenuItem::close_window(app, None)?,
+          #[cfg(not(target_os = "macos"))]
+          &PredefinedMenuItem::quit(app, None)?,
+        ],
+      )?,
+      &Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+          &PredefinedMenuItem::undo(app, None)?,
+          &PredefinedMenuItem::redo(app, None)?,
+          &PredefinedMenuItem::separator(app)?,
+          &PredefinedMenuItem::cut(app, None)?,
+          &PredefinedMenuItem::copy(app, None)?,
+          &PredefinedMenuItem::paste(app, None)?,
+          &PredefinedMenuItem::select_all(app, None)?,
+        ],
+      )?,
+      #[cfg(target_os = "macos")]
+      &Submenu::with_items(app, "View", true, &[&PredefinedMenuItem::fullscreen(app, None)?])?,
+      &window_menu,
+      &help_menu,
+    ],
+  )?;
+  app.set_menu(menu)?;
+  app.on_menu_event(|app, event| {
+    if event.id() == CLOSE_PROJECT_ID {
+      let _ = app.emit("ek:close-project", ());
+    }
+  });
+  Ok(())
+}
+
+#[tauri::command]
+fn set_close_project_label(app: AppHandle, text: String) {
+  if let Some(item) = close_project_item(&app) {
+    let _ = item.set_text(text);
+  }
+}
+
+#[tauri::command]
+fn close_project_connections(paths: Vec<String>) {
+  project_db::close_connections(&paths);
+}
+
+#[tauri::command]
+fn close_popout_windows(app: AppHandle) {
+  let labels: Vec<String> = app.webview_windows().keys().filter(|label| label.starts_with("popout-")).cloned().collect();
+  for label in labels {
+    if let Some(window) = app.get_webview_window(&label) {
+      let _ = window.destroy();
+    }
+  }
+}
+
 #[tauri::command]
 fn set_welcome_window(app: AppHandle, welcome: bool) {
   let Some(window) = app.get_webview_window("main") else { return };
@@ -344,9 +478,13 @@ pub fn run() {
       list_child_dirs,
       set_welcome_window,
       session_set,
-      session_get
+      session_get,
+      set_close_project_label,
+      close_project_connections,
+      close_popout_windows
     ])
     .setup(move |app| {
+      install_app_menu(app.handle())?;
       let handle = app.handle().clone();
       let saved = geometry::load_main(app.handle());
       let mut main_builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
