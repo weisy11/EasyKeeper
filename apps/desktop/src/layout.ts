@@ -153,7 +153,7 @@ export class WorkspaceController {
     this.restoring = true;
     for (const p of [...api.panels]) {
       const toolId = String((p.params as { toolId?: string } | undefined)?.toolId ?? p.id);
-      await closeTool(toolId, { skipReload: true });
+      await closeTool(toolId);
     }
     api.clear();
     for (const pos of EDGES) {
@@ -396,7 +396,7 @@ export class WorkspaceController {
     this.restoring = true;
     for (const p of [...this.api.panels]) {
       const toolId = String((p.params as { toolId?: string } | undefined)?.toolId ?? p.id);
-      await closeTool(toolId, { skipReload: true });
+      await closeTool(toolId);
     }
     await clearPopoutQueue();
     for (const p of this.api.getPopouts()) {

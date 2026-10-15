@@ -17,6 +17,7 @@ import {
   splitProjectPath,
   validFolderName,
 } from "./fs";
+import { rememberSession } from "./launchSession";
 import { forgetProject, migrateLegacyRecent, rememberProject, recentStore } from "./recent";
 import { sessionStore } from "./sessionStore";
 import type { ProjectKind, RecentProject } from "./types";
@@ -32,14 +33,16 @@ type View =
   | { name: "pick-record" };
 
 function enterProject(path: string, name: string, kind: ProjectKind, modulePath: string | null) {
-  sessionStore.set({
+  const session = {
     mode: kind === "scenario" ? "prep" : "play",
     projectPath: path,
     name,
     kind,
     modulePath,
     moduleEditable: kind === "scenario",
-  });
+  } as const;
+  sessionStore.set(session);
+  void rememberSession(session);
   rememberProject({ path, name, kind, modulePath });
 }
 

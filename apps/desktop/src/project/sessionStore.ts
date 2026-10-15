@@ -1,5 +1,5 @@
 import { createStore } from "@/lib/store";
 import type { SessionContext } from "./types";
 
-/** Open project for this launch. Not persisted, so a reload returns to the welcome page. */
+/** Open project for this page. The desktop process keeps a copy across reloads; quitting the app drops it. */
 export const sessionStore = createStore<SessionContext | null>(null);

@@ -1,8 +1,10 @@
 mod geometry;
 mod project_db;
+mod session;
 mod snapshot;
 
 use geometry::{MainWindowState, Rect};
+use session::{session_get, session_set, LaunchMemory};
 use snapshot::{create_project_snapshot, delete_project_snapshot, list_project_snapshots};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -317,6 +319,7 @@ pub fn run() {
     .manage(PopoutQueue::default())
     .manage(MainGeometry::default())
     .manage(PersistMainWindow(AtomicBool::new(false)))
+    .manage(LaunchMemory::default())
     .invoke_handler(tauri::generate_handler![
       log_line,
       queue_popout,
@@ -339,7 +342,9 @@ pub fn run() {
       ensure_dir,
       path_exists,
       list_child_dirs,
-      set_welcome_window
+      set_welcome_window,
+      session_set,
+      session_get
     ])
     .setup(move |app| {
       let handle = app.handle().clone();

@@ -3,15 +3,6 @@
 type Disposable = { destroy?: () => void; clearDice?: () => void };
 
 const boxes = new Set<Disposable>();
-let heavyLoaded = false;
-
-export function markDiceHeavyLoaded() {
-  heavyLoaded = true;
-}
-
-export function wasDiceHeavyLoaded() {
-  return heavyLoaded;
-}
 
 export function registerDiceBox(box: Disposable) {
   boxes.add(box);
@@ -43,5 +34,4 @@ export function disposeDiceRuntime() {
     }
   }
   boxes.clear();
-  // Keep heavyLoaded=true so host can reload window after dispose to drop module cache.
 }
