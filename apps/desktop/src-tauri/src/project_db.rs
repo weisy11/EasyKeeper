@@ -105,6 +105,11 @@ fn valid_prefix(prefix: &str) -> bool {
         && prefix.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
 }
 
+fn pragma_table(value: &str) -> &str {
+    let name = value.rsplit('.').next().unwrap_or(value);
+    name.trim_matches('"')
+}
+
 fn is_catalog(table_name: &str) -> bool {
     matches!(table_name, "sqlite_master" | "sqlite_schema" | "sqlite_temp_master" | "sqlite_temp_schema")
 }
@@ -133,6 +138,11 @@ fn allow_action(prefix: &str, action: &AuthAction<'_>) -> bool {
             view_name.starts_with(prefix)
         }
         AuthAction::Reindex { index_name } => index_name.starts_with(prefix),
+        // Schema migration reads column lists and adds missing columns on this tool's tables.
+        AuthAction::AlterTable { table_name, .. } => table_name.starts_with(prefix),
+        AuthAction::Pragma { pragma_name, pragma_value } => {
+            matches!(*pragma_name, "table_info" | "table_xinfo") && pragma_value.is_some_and(|value| pragma_table(value).starts_with(prefix))
+        }
         _ => false,
     }
 }
@@ -213,6 +223,26 @@ mod tests {
         exec(&project, "ek_dice_", "CREATE TABLE ek_dice_roll (id TEXT PRIMARY KEY)", &[]).unwrap();
         let denied = query(&project, "ek_scenario_", "SELECT id FROM ek_dice_roll", &[]);
         assert!(denied.is_err());
+    }
+
+    #[test]
+    fn tool_can_inspect_and_alter_its_own_table() {
+        let project = temp_project("pragma");
+        exec(&project, "ek_scenario_", "CREATE TABLE ek_scenario_actor (id TEXT PRIMARY KEY)", &[]).unwrap();
+        let columns = query(&project, "ek_scenario_", "PRAGMA table_info(ek_scenario_actor)", &[]).unwrap();
+        assert!(columns.iter().any(|row| row["name"] == Value::String("id".into())));
+        exec(&project, "ek_scenario_", "ALTER TABLE ek_scenario_actor ADD COLUMN notes TEXT NOT NULL DEFAULT ''", &[]).unwrap();
+        let columns = query(&project, "ek_scenario_", "PRAGMA main.table_info(ek_scenario_actor)", &[]).unwrap();
+        assert!(columns.iter().any(|row| row["name"] == Value::String("notes".into())));
+    }
+
+    #[test]
+    fn tool_cannot_inspect_or_alter_another_tools_table() {
+        let project = temp_project("pragma-other");
+        exec(&project, "ek_dice_", "CREATE TABLE ek_dice_roll (id TEXT PRIMARY KEY)", &[]).unwrap();
+        assert!(query(&project, "ek_scenario_", "PRAGMA table_info(ek_dice_roll)", &[]).is_err());
+        assert!(exec(&project, "ek_scenario_", "ALTER TABLE ek_dice_roll ADD COLUMN note TEXT NOT NULL DEFAULT ''", &[]).is_err());
+        assert!(exec(&project, "ek_scenario_", "PRAGMA writable_schema=ON", &[]).is_err());
     }
 
     #[test]
