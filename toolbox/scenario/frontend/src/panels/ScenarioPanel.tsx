@@ -96,7 +96,7 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
           <Separator label={t("resizeSceneClues")} orientation="horizontal" onPointerDown={(event) => dragSplit(event, "left")} />
           <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: `${1 - leftRatio} 1 0px` }}>
             {play ? (
-              <PlayClueColumn locale={locale} projectPath={source} selected={selected} editable={editable} />
+              <PlayClueColumn locale={locale} projectPath={source} recordPath={projectPath} selected={selected} editable={editable} />
             ) : (
               <ClueColumn locale={locale} projectPath={source} selected={selected} />
             )}
@@ -115,7 +115,7 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
         <div ref={rightRef} className="flex min-h-0 min-w-0 shrink-0 flex-col" style={{ width: rightWidth }}>
           <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: `${rightRatio} 1 0px` }}>
             {play ? (
-              <PlayNpcColumn locale={locale} projectPath={source} selected={selected} editable={editable} />
+              <PlayNpcColumn locale={locale} projectPath={source} recordPath={projectPath} selected={selected} editable={editable} />
             ) : (
               <NpcColumn locale={locale} projectPath={source} selected={selected} />
             )}
