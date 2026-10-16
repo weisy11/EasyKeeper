@@ -86,7 +86,7 @@ function StoredImage({ node }: ReactNodeViewProps) {
   return <NodeViewWrapper>{url ? <img src={url} alt="" /> : null}</NodeViewWrapper>;
 }
 
-export function BodyEditor({ projectPath, pageId }: { projectPath: string; pageId: string }) {
+export function BodyEditor({ projectPath, pageId, editable }: { projectPath: string; pageId: string; editable: boolean }) {
   const locale = useScenarioLocale();
   const t = (key: ScenarioStringKey) => scenarioT(locale, key);
   const [findOpen, setFindOpen] = useState(false);
@@ -94,10 +94,13 @@ export function BodyEditor({ projectPath, pageId }: { projectPath: string; pageI
   const [replaceTerm, setReplaceTerm] = useState("");
   const editorRef = useRef<Editor | null>(null);
   const projectRef = useRef(projectPath);
+  const editableRef = useRef(editable);
   projectRef.current = projectPath;
+  editableRef.current = editable;
   const ready = useRef(false);
   const dirty = useRef(false);
   const editor = useEditor({
+    editable,
     extensions: [
       StarterKit.configure({ heading: { levels: [...HEADING_LEVELS] } }),
       storedImage,
@@ -113,7 +116,7 @@ export function BodyEditor({ projectPath, pageId }: { projectPath: string; pageI
         const current = editorRef.current;
         const root = projectRef.current;
         const files = imageFiles(event);
-        if (!current || !root || files.length === 0) return false;
+        if (!editableRef.current || !current || !root || files.length === 0) return false;
         void (async () => {
           for (const file of files) {
             const src = await savePastedImage(root, file);
@@ -126,6 +129,14 @@ export function BodyEditor({ projectPath, pageId }: { projectPath: string; pageI
     content: EMPTY_DOC,
   });
   const [, setTick] = useState(0);
+
+  useEffect(() => {
+    editor?.setEditable(editable);
+    if (!editable) {
+      setFindOpen(false);
+      editor?.commands.clearSearch();
+    }
+  }, [editor, editable]);
 
   useEffect(() => {
     editorRef.current = editor;
@@ -144,7 +155,7 @@ export function BodyEditor({ projectPath, pageId }: { projectPath: string; pageI
   }, [editor, pageId, projectPath]);
 
   useEffect(() => {
-    if (!editor) return;
+    if (!editor || !editable) return;
     const save = () => {
       if (!ready.current || !dirty.current || !projectPath) return;
       dirty.current = false;
@@ -175,10 +186,9 @@ export function BodyEditor({ projectPath, pageId }: { projectPath: string; pageI
       window.clearTimeout(timer);
       save();
     };
-  }, [editor, pageId, projectPath]);
+  }, [editor, editable, pageId, projectPath]);
 
   useEffect(() => {
-    editorRef.current = editor;
     if (!editor) return;
     const update = () => setTick((n) => n + 1);
     editor.on("transaction", update);
@@ -200,7 +210,7 @@ export function BodyEditor({ projectPath, pageId }: { projectPath: string; pageI
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-page={pageId}>
-      <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-2 py-1">
+      {editable && <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-2 py-1">
         <select
           data-heading
           aria-label={t("heading1")}
@@ -249,8 +259,8 @@ export function BodyEditor({ projectPath, pageId }: { projectPath: string; pageI
           ))}
         </select>
         <ToolButton title={t("findReplace")} active={findOpen} onClick={() => (findOpen ? closeFind() : setFindOpen(true))}>{t("find")}</ToolButton>
-      </div>
-      {findOpen && (
+      </div>}
+      {editable && findOpen && (
         <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-2 py-1" data-find-bar>
           <input
             data-find

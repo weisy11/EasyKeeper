@@ -191,21 +191,23 @@ export function SceneNav({
   projectPath,
   selected,
   onSelect,
+  editable,
 }: {
   locale: ScenarioLocale;
   projectPath: string;
   selected: string;
   onSelect: (id: string) => void;
+  editable: boolean;
 }) {
   const t = (key: ScenarioStringKey) => scenarioT(locale, key);
   const usingDb = Boolean(projectPath) && projectDatabaseAvailable();
-  const [nodes, setNodes] = useState<NavNode[]>(() => (usingDb ? [] : initialScenes()));
+  const [nodes, setNodes] = useState<NavNode[]>(() => (!usingDb && editable && projectPath !== "" ? initialScenes() : []));
   const [trash, setTrash] = useState<NavNode[]>([]);
   const [trashOpen, setTrashOpen] = useState(false);
   const [locks, setLocks] = useState<Record<string, string[]>>({});
   const [articles, setArticles] = useState<ScenarioArticle[]>(readArticles);
   const [unlocking, setUnlocking] = useState<string | null>(null);
-  const [openIds, setOpenIds] = useState<string[]>(() => (usingDb ? [] : ["scene1"]));
+  const [openIds, setOpenIds] = useState<string[]>(() => (!usingDb && editable && projectPath !== "" ? ["scene1"] : []));
   const [hint, setHint] = useState<Hint | null>(null);
   const [menu, setMenu] = useState<{ id: string | null; x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -293,6 +295,7 @@ export function SceneNav({
   }
 
   async function saveUnlock(nodeId: string, articleIds: string[]) {
+    if (!editable || projectPath === "") return;
     const known = new Set(articles.map((item) => item.id));
     const next = articleIds.filter((id) => known.has(id));
     setLocks((current) => ({ ...current, [nodeId]: next }));
@@ -325,7 +328,7 @@ export function SceneNav({
   }
 
   async function persist(parentId: string | null, ids: string[]) {
-    if (!usingDb) return;
+    if (!editable || !usingDb) return;
     await placeScenarioNodes(projectPath, parentId, ids);
   }
 
@@ -357,6 +360,7 @@ export function SceneNav({
   }
 
   async function moveMany(ids: string[], targetId: string, place: Place) {
+    if (!editable || projectPath === "") return;
     const sourceParents = [...new Set(ids.flatMap((id) => {
       const spot = forestSpot(nodes, trash, id);
       return spot ? [spot.parentId] : [];
@@ -377,6 +381,7 @@ export function SceneNav({
   }
 
   async function addNode(parentId: string | null, kind: "scene" | "event") {
+    if (!editable || projectPath === "") return;
     const title = t(kind === "scene" ? "untitledScene" : "untitledEvent");
     const node = usingDb
       ? fromTree(await createScenarioNode(projectPath, { parentId, kind, title }).then((created) => ({ id: created.id, kind: created.kind, title: created.title, children: [] })))
@@ -398,7 +403,7 @@ export function SceneNav({
   async function rename(id: string, title: string) {
     const next = title.trim();
     setRenaming(null);
-    if (!next || id === TRASH_ID) return;
+    if (!next || id === TRASH_ID || !editable || projectPath === "") return;
     if (usingDb) await renameScenarioNode(projectPath, id, next);
     const visit = (list: NavNode[]): NavNode[] => list.map((node) => (
       node.id === id ? { ...node, title: next, titleKey: undefined } : { ...node, children: visit(node.children) }
@@ -409,7 +414,7 @@ export function SceneNav({
 
   async function duplicate(id: string) {
     const spot = forestSpot(nodes, trash, id);
-    if (!spot || id === TRASH_ID) return;
+    if (!spot || id === TRASH_ID || !editable || projectPath === "") return;
     const source = spot.siblings[spot.index];
     const copy = usingDb
       ? fromTree(await duplicateScenarioNode(projectPath, toTree(source, locale), spot.parentId))
@@ -427,6 +432,7 @@ export function SceneNav({
   }
 
   async function moveToTrash(id: string) {
+    if (!editable || projectPath === "") return;
     const ids = picked.includes(id) ? picked : [id];
     const source = forestSpot(nodes, trash, ids[0]);
     if (!source || source.area === "trash") return;
@@ -445,7 +451,7 @@ export function SceneNav({
 
   async function purge(id: string) {
     const spot = forestSpot(nodes, trash, id);
-    if (!spot || spot.area !== "trash" || id === TRASH_ID) return;
+    if (!spot || spot.area !== "trash" || id === TRASH_ID || !editable || projectPath === "") return;
     const pulled = pull(nodes, trash, id);
     if (!pulled) return;
     if (usingDb) await deleteScenarioNode(projectPath, id);
@@ -468,8 +474,12 @@ export function SceneNav({
         <div key={node.id} data-ancestors={ancestors.join(" ")}>
           <div
             data-page-id={node.id}
-            draggable
+            draggable={editable}
             onDragStart={(event) => {
+              if (!editable) {
+                event.preventDefault();
+                return;
+              }
               const group = picked.includes(node.id) ? picked : [node.id];
               dragIds.current = group;
               if (!picked.includes(node.id)) {
@@ -515,6 +525,7 @@ export function SceneNav({
             }}
             onContextMenu={(event) => {
               event.preventDefault();
+              if (!editable) return;
               setMenu({ id: node.id, x: event.clientX, y: event.clientY });
             }}
             data-selected={picked.includes(node.id) ? "true" : "false"}
@@ -556,7 +567,7 @@ export function SceneNav({
                 {title}
               </button>
             )}
-            <span className={`shrink-0 items-center ${selected === node.id ? "flex" : "hidden group-hover:flex"}`}>
+            {editable && <span className={`shrink-0 items-center ${selected === node.id ? "flex" : "hidden group-hover:flex"}`}>
               <button
                 type="button"
                 title={t("addChildScene")}
@@ -584,7 +595,7 @@ export function SceneNav({
               >
                 <MoreHorizontal className="size-3.5" />
               </button>
-            </span>
+            </span>}
           </div>
           {expanded ? renderNodes(node.children, [...ancestors, node.id], depth + 1) : null}
         </div>
@@ -627,20 +638,22 @@ export function SceneNav({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border bg-card px-2.5 text-xs font-semibold">
         <span className="min-w-0 flex-1 truncate">{t("scenes")}</span>
-        <button type="button" title={t("addRootScene")} className="grid size-6 place-items-center rounded font-normal hover:bg-muted" onClick={() => void addNode(null, "scene").catch(reportDbError)}>
-          <Plus className="size-3.5" />
-        </button>
+        {editable && (
+          <button type="button" title={t("addRootScene")} className="grid size-6 place-items-center rounded font-normal hover:bg-muted" onClick={() => void addNode(null, "scene").catch(reportDbError)}>
+            <Plus className="size-3.5" />
+          </button>
+        )}
       </div>
       <div
         ref={bodyRef}
         className="grid min-h-0 flex-1"
-        style={{ gridTemplateRows: trashOpen ? `minmax(0,1fr) minmax(0,${trashRatio * 100}%)` : "minmax(0,1fr) auto" }}
+        style={{ gridTemplateRows: !editable ? "minmax(0,1fr)" : trashOpen ? `minmax(0,1fr) minmax(0,${trashRatio * 100}%)` : "minmax(0,1fr) auto" }}
       >
         <div
           ref={treeRef}
           className="min-h-0 overflow-auto pb-2"
           onContextMenu={(event) => {
-            if (event.target !== event.currentTarget) return;
+            if (!editable || event.target !== event.currentTarget) return;
             event.preventDefault();
             setMenu({ id: null, x: event.clientX, y: event.clientY });
           }}
@@ -648,38 +661,40 @@ export function SceneNav({
           {dbError ? <p className="px-3 py-2 text-xs text-destructive">{t("catalogLoadFailed")}</p> : null}
           {renderNodes(nodes, [], 0)}
         </div>
-        <div className="flex min-h-0 flex-col">
-          {trashOpen ? (
-            <div
-              data-trash-resize=""
-              role="separator"
-              aria-orientation="horizontal"
-              title={t("resizeTrash")}
-              className="relative h-2 shrink-0 cursor-row-resize before:absolute before:inset-x-0 before:top-1/2 before:border-t before:border-border"
-              onPointerDown={onSplitPointerDown}
-              onPointerMove={onSplitPointerMove}
-              onPointerUp={onSplitPointerUp}
-              onPointerCancel={onSplitPointerUp}
-            />
-          ) : (
-            <div className="border-t border-border" />
-          )}
-          <button
-            type="button"
-            className="flex h-7 w-full shrink-0 items-center gap-1 px-2 text-left text-[13px]"
-            onClick={() => setTrashOpen((open) => !open)}
-            onContextMenu={(event) => event.preventDefault()}
-          >
-            <ChevronRight className={`size-3.5 shrink-0 transition-transform ${trashOpen ? "rotate-90" : ""}`} />
-            <Trash2 className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1 truncate">{t("trash")}</span>
-          </button>
-          {trashOpen ? (
-            <div ref={trashRef} className="min-h-0 flex-1 overflow-auto">
-              {renderNodes(trash, [], 1)}
-            </div>
-          ) : null}
-        </div>
+        {editable && (
+          <div className="flex min-h-0 flex-col">
+            {trashOpen ? (
+              <div
+                data-trash-resize=""
+                role="separator"
+                aria-orientation="horizontal"
+                title={t("resizeTrash")}
+                className="relative h-2 shrink-0 cursor-row-resize before:absolute before:inset-x-0 before:top-1/2 before:border-t before:border-border"
+                onPointerDown={onSplitPointerDown}
+                onPointerMove={onSplitPointerMove}
+                onPointerUp={onSplitPointerUp}
+                onPointerCancel={onSplitPointerUp}
+              />
+            ) : (
+              <div className="border-t border-border" />
+            )}
+            <button
+              type="button"
+              className="flex h-7 w-full shrink-0 items-center gap-1 px-2 text-left text-[13px]"
+              onClick={() => setTrashOpen((open) => !open)}
+              onContextMenu={(event) => event.preventDefault()}
+            >
+              <ChevronRight className={`size-3.5 shrink-0 transition-transform ${trashOpen ? "rotate-90" : ""}`} />
+              <Trash2 className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate">{t("trash")}</span>
+            </button>
+            {trashOpen ? (
+              <div ref={trashRef} className="min-h-0 flex-1 overflow-auto">
+                {renderNodes(trash, [], 1)}
+              </div>
+            ) : null}
+          </div>
+        )}
       </div>
       {menu && (
         <div

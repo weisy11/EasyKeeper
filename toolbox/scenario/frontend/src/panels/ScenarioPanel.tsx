@@ -8,11 +8,6 @@ import { ClueColumn } from "./ClueColumn";
 import { MapColumn } from "./MapColumn";
 import { NpcColumn } from "./NpcColumn";
 import { SceneNav } from "./SceneNav";
-import { BodyEditor as PlayBodyEditor } from "../play/BodyEditor";
-import { ClueColumn as PlayClueColumn } from "../play/ClueColumn";
-import { MapColumn as PlayMapColumn } from "../play/MapColumn";
-import { NpcColumn as PlayNpcColumn } from "../play/NpcColumn";
-import { SceneNav as PlaySceneNav } from "../play/SceneNav";
 
 const LEFT_WIDTH = 220;
 const RIGHT_WIDTH = 240;
@@ -23,7 +18,8 @@ const MIN_PANE = 72;
 export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }: ToolPanelProps) {
   const play = mode === "play";
   const source = play ? (modulePath ?? "") : projectPath;
-  const editable = play && moduleEditable === true;
+  const editable = play ? moduleEditable === true : true;
+  const recordPath = play ? projectPath : "";
   const locale = useScenarioLocale();
   const t = (key: ScenarioStringKey) => scenarioT(locale, key);
   const [selected, setSelected] = useState(play ? "" : "scene1");
@@ -87,46 +83,26 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
       <div ref={frameRef} className="flex h-full min-h-0 bg-border text-[13px]">
         <div ref={leftRef} className="flex min-h-0 min-w-0 shrink-0 flex-col" style={{ width: leftWidth }}>
           <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: `${leftRatio} 1 0px` }}>
-            {play ? (
-              <PlaySceneNav locale={locale} projectPath={source} selected={selected} onSelect={setSelected} editable={editable} />
-            ) : (
-              <SceneNav locale={locale} projectPath={source} selected={selected} onSelect={setSelected} />
-            )}
+            <SceneNav locale={locale} projectPath={source} selected={selected} onSelect={setSelected} editable={editable} />
           </section>
           <Separator label={t("resizeSceneClues")} orientation="horizontal" onPointerDown={(event) => dragSplit(event, "left")} />
           <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: `${1 - leftRatio} 1 0px` }}>
-            {play ? (
-              <PlayClueColumn locale={locale} projectPath={source} recordPath={projectPath} selected={selected} editable={editable} />
-            ) : (
-              <ClueColumn locale={locale} projectPath={source} selected={selected} />
-            )}
+            <ClueColumn locale={locale} projectPath={source} recordPath={recordPath} selected={selected} editable={editable} />
           </section>
         </div>
         <Separator label={t("resizeSceneColumn")} orientation="vertical" onPointerDown={(event) => dragWidth(event, "left")} />
         <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
           <Header>{t("body")}</Header>
-          {play ? (
-            <PlayBodyEditor key={selected} projectPath={source} pageId={selected} editable={editable} />
-          ) : (
-            <BodyEditor key={selected} projectPath={source} pageId={selected} />
-          )}
+          <BodyEditor key={selected} projectPath={source} pageId={selected} editable={editable} />
         </section>
         <Separator label={t("resizeSideColumn")} orientation="vertical" onPointerDown={(event) => dragWidth(event, "right")} />
         <div ref={rightRef} className="flex min-h-0 min-w-0 shrink-0 flex-col" style={{ width: rightWidth }}>
           <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: `${rightRatio} 1 0px` }}>
-            {play ? (
-              <PlayNpcColumn locale={locale} projectPath={source} recordPath={projectPath} selected={selected} editable={editable} />
-            ) : (
-              <NpcColumn locale={locale} projectPath={source} selected={selected} />
-            )}
+            <NpcColumn locale={locale} projectPath={source} recordPath={recordPath} selected={selected} editable={editable} />
           </section>
           <Separator label={t("resizeNpcMap")} orientation="horizontal" onPointerDown={(event) => dragSplit(event, "right")} />
           <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: `${1 - rightRatio} 1 0px` }}>
-            {play ? (
-              <PlayMapColumn locale={locale} projectPath={source} selected={selected} editable={editable} />
-            ) : (
-              <MapColumn locale={locale} projectPath={source} selected={selected} />
-            )}
+            <MapColumn locale={locale} projectPath={source} selected={selected} editable={editable} />
           </section>
         </div>
       </div>

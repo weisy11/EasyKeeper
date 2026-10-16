@@ -156,6 +156,12 @@ export async function saveRecordMonster(recordPath: string, monster: Pick<Record
   );
 }
 
+export async function deleteRecordActor(recordPath: string, actorId: string) {
+  if (!databaseReady() || !recordPath) return;
+  await ensureRecordSchema(recordPath);
+  await exec(recordPath, "DELETE FROM ek_scenario_record_actor WHERE actor_id = ?1", [actorId]);
+}
+
 export async function saveRecordActor(recordPath: string, actor: RecordActorVitals) {
   if (!databaseReady() || !recordPath) return;
   await ensureRecordSchema(recordPath);

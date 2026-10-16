@@ -15,7 +15,7 @@ import { scenarioT, type ScenarioLocale, type ScenarioStringKey } from "../i18n"
 import { presentSceneIds, readSceneCatalog, sceneLinkRows, subscribeSceneCatalog, type SceneCatalog } from "../sceneLinks";
 import { loadImageObjectUrl, savePastedImage } from "../storage";
 
-export function MapColumn({ locale, projectPath, selected }: { locale: ScenarioLocale; projectPath: string; selected: string }) {
+export function MapColumn({ locale, projectPath, selected, editable }: { locale: ScenarioLocale; projectPath: string; selected: string; editable: boolean }) {
   const t = (key: ScenarioStringKey) => scenarioT(locale, key);
   const [maps, setMaps] = useState<ScenarioMap[]>([]);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
@@ -51,7 +51,7 @@ export function MapColumn({ locale, projectPath, selected }: { locale: ScenarioL
   useEffect(() => subscribeSceneCatalog(setCatalog), []);
 
   useEffect(() => {
-    if (!catalog.ready) return;
+    if (!catalog.ready || !editable || projectPath === "") return;
     const present = presentSceneIds(catalog.nodes, catalog.trash);
     setMaps((items) => {
       let changed = false;
@@ -69,7 +69,7 @@ export function MapColumn({ locale, projectPath, selected }: { locale: ScenarioL
       }
       return changed ? next : items;
     });
-  }, [catalog, projectPath, usingDb]);
+  }, [catalog, editable, projectPath, usingDb]);
 
   useEffect(() => {
     if (!menu) return;
@@ -88,7 +88,7 @@ export function MapColumn({ locale, projectPath, selected }: { locale: ScenarioL
   }, [preview]);
 
   async function pick(file: File | undefined) {
-    if (!file || !file.type.startsWith("image/")) return;
+    if (!editable || projectPath === "" || !file || !file.type.startsWith("image/")) return;
     const src = await savePastedImage(projectPath, file);
     const target = replaceId.current;
     replaceId.current = null;
@@ -113,12 +113,14 @@ export function MapColumn({ locale, projectPath, selected }: { locale: ScenarioL
   }
 
   async function setLinks(id: string, links: string[]) {
+    if (!editable || projectPath === "") return;
     setMaps((items) => items.map((item) => (item.id === id ? { ...item, links } : item)));
     if (usingDb) await updateScenarioMapLinks(projectPath, id, links);
   }
 
   async function remove(id: string) {
     setMenu(null);
+    if (!editable || projectPath === "") return;
     if (preview?.id === id) setPreview(null);
     if (usingDb) {
       await deleteScenarioMap(projectPath, id);
@@ -134,7 +136,7 @@ export function MapColumn({ locale, projectPath, selected }: { locale: ScenarioL
   }
 
   async function reorder(fromId: string, toId: string, place: "before" | "after") {
-    if (fromId === toId) return;
+    if (!editable || projectPath === "" || fromId === toId) return;
     const next = [...maps];
     const from = next.findIndex((item) => item.id === fromId);
     const to = next.findIndex((item) => item.id === toId);
@@ -163,26 +165,28 @@ export function MapColumn({ locale, projectPath, selected }: { locale: ScenarioL
         >
           <Filter className="size-3.5" />
         </button>
-        <button
-          type="button"
-          title={t("addMap")}
-          aria-label={t("addMap")}
-          data-map-add=""
-          className="grid size-6 place-items-center rounded font-normal text-muted-foreground hover:bg-muted hover:text-foreground"
-          onClick={() => {
-            replaceId.current = null;
-            fileRef.current?.click();
-          }}
-        >
-          <Plus className="size-3.5" />
-        </button>
+        {editable && (
+          <button
+            type="button"
+            title={t("addMap")}
+            aria-label={t("addMap")}
+            data-map-add=""
+            className="grid size-6 place-items-center rounded font-normal text-muted-foreground hover:bg-muted hover:text-foreground"
+            onClick={() => {
+              replaceId.current = null;
+              fileRef.current?.click();
+            }}
+          >
+            <Plus className="size-3.5" />
+          </button>
+        )}
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {(linkedOnly ? maps.filter((map) => selected !== "" && map.links.includes(selected)) : maps).map((map) => (
           <button
             key={map.id}
             type="button"
-            draggable
+            draggable={editable}
             data-map={map.id}
             data-map-drop={hint?.id === map.id ? hint.place : "none"}
             className="relative block w-full cursor-grab border-b border-border bg-background p-1.5 active:cursor-grabbing"
@@ -194,10 +198,18 @@ export function MapColumn({ locale, projectPath, selected }: { locale: ScenarioL
               setPreview(map);
             }}
             onContextMenu={(event) => {
+              if (!editable) {
+                event.preventDefault();
+                return;
+              }
               event.preventDefault();
               setMenu({ id: map.id, x: event.clientX, y: event.clientY });
             }}
-            onDragStart={() => {
+            onDragStart={(event) => {
+              if (!editable) {
+                event.preventDefault();
+                return;
+              }
               dragId.current = map.id;
             }}
             onDrag={() => {

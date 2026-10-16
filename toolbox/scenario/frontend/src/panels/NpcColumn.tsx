@@ -1,4 +1,4 @@
-import { DicesIcon, Filter, ImagePlus, Plus, X } from "lucide-react";
+import { DicesIcon, Filter, ImagePlus, Plus, User, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { applyActorArticles, publishActorIndex, publishArticles, readArticles, subscribeArticles } from "../articleStore";
 import { derive, rollCharacteristics, type Characteristics, type Derived } from "../cocSheet";
@@ -17,6 +17,7 @@ import {
 } from "../db";
 import { scenarioT, type ScenarioLocale, type ScenarioStringKey } from "../i18n";
 import { ListTrash } from "./ListTrash";
+import { deleteRecordActor, ensureRecordSchema, insertRecordMonster, loadRecordActors, loadRecordMonsters, saveRecordActor, saveRecordMonster, type RecordActorVitals, type RecordMonster } from "../play/recordDb";
 import { presentSceneIds, readSceneCatalog, sceneLinkRows, subscribeSceneCatalog, type SceneCatalog } from "../sceneLinks";
 import { loadImageObjectUrl, savePastedImage } from "../storage";
 
@@ -41,13 +42,29 @@ type AttackDraft = { key: string; name: string; chance: string; damage: string; 
 
 const EMPTY_DERIVED_TEXT: DerivedText = { hp: "", mp: "", san: "", damage: "", build: "", mov: "" };
 
-export function NpcColumn({ locale, projectPath, selected }: { locale: ScenarioLocale; projectPath: string; selected: string }) {
+export function NpcColumn({
+  locale,
+  projectPath,
+  recordPath = "",
+  selected,
+  editable,
+}: {
+  locale: ScenarioLocale;
+  projectPath: string;
+  recordPath?: string;
+  selected: string;
+  editable: boolean;
+}) {
   const t = (key: ScenarioStringKey) => scenarioT(locale, key);
   const [actors, setActors] = useState<Actor[]>([]);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [rowMenu, setRowMenu] = useState<{ id: string; trashed: boolean; x: number; y: number } | null>(null);
   const [trashOpen, setTrashOpen] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [sheet, setSheet] = useState<Actor | null>(null);
+  const [recordActors, setRecordActors] = useState<RecordActorVitals[]>([]);
+  const [monsters, setMonsters] = useState<RecordMonster[]>([]);
+  const [monsterId, setMonsterId] = useState<string | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
   const [linkedOnly, setLinkedOnly] = useState(false);
   const titleId = useId();
@@ -75,6 +92,41 @@ export function NpcColumn({ locale, projectPath, selected }: { locale: ScenarioL
   }, [actors]);
 
   useEffect(() => {
+    if (!recordPath || !projectDatabaseAvailable()) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await ensureRecordSchema(recordPath);
+        const rows = await loadRecordActors(recordPath);
+        if (!cancelled) setRecordActors(rows);
+      } catch (error) {
+        console.error(error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [recordPath]);
+
+  useEffect(() => {
+    if (!recordPath || !projectDatabaseAvailable()) return;
+    let cancelled = false;
+    void loadRecordMonsters(recordPath).then((rows) => {
+      if (!cancelled) setMonsters(rows);
+    }).catch((error: unknown) => console.error(error));
+    return () => {
+      cancelled = true;
+    };
+  }, [recordPath]);
+
+  useEffect(() => {
+    if (editable) {
+      setSheet(null);
+      setMonsterId(null);
+    }
+  }, [editable]);
+
+  useEffect(() => {
     if (!menu && !rowMenu) return;
     const close = () => {
       setMenu(null);
@@ -90,6 +142,7 @@ export function NpcColumn({ locale, projectPath, selected }: { locale: ScenarioL
   }
 
   async function save(actor: Actor, articleIds: string[]) {
+    if (!editable || projectPath === "") return;
     if (usingDb) {
       await ensureScenarioSchema(projectPath);
       if (draft?.actor) await updateScenarioActor(projectPath, actor);
@@ -109,6 +162,7 @@ export function NpcColumn({ locale, projectPath, selected }: { locale: ScenarioL
 
   async function moveActor(id: string, trashed: boolean) {
     setRowMenu(null);
+    if (!editable || projectPath === "") return;
     if (trashed) setTrashOpen(true);
     if (usingDb) {
       await setScenarioActorTrashed(projectPath, id, trashed);
@@ -118,8 +172,57 @@ export function NpcColumn({ locale, projectPath, selected }: { locale: ScenarioL
     }
   }
 
+  function npcVitals(actor: Actor): RecordActorVitals {
+    return { actorId: actor.id, hp: actor.derived.hp, mp: actor.derived.mp, san: actor.derived.san, luck: actor.stats.luck };
+  }
+
+  async function activateNpc(actor: Actor) {
+    if (!recordPath || recordActors.some((row) => row.actorId === actor.id)) return;
+    const next = npcVitals(actor);
+    await saveRecordActor(recordPath, next);
+    setRecordActors((current) => [...current, next]);
+    setPicked(actor.id);
+    setMonsterId(null);
+    setSheet(actor);
+  }
+
+  async function resetNpc(actor: Actor) {
+    if (!recordPath) return;
+    await deleteRecordActor(recordPath, actor.id);
+    setRecordActors((current) => current.filter((row) => row.actorId !== actor.id));
+  }
+
+  async function updateNpc(actorId: string, vitals: { hp: number; mp: number; san: number; luck: number }) {
+    if (!recordPath) return;
+    const next = { actorId, ...vitals };
+    setRecordActors((current) => current.map((row) => (row.actorId === actorId ? next : row)));
+    await saveRecordActor(recordPath, next);
+  }
+
+  async function addMonster(actor: Actor) {
+    if (!recordPath) return;
+    const created = await insertRecordMonster(recordPath, actor.id, {
+      hp: actor.derived.hp,
+      mp: actor.derived.mp,
+      san: actor.derived.san,
+      luck: actor.stats.luck,
+    });
+    if (!created) return;
+    setMonsters((current) => [...current, created].sort((a, b) => a.position - b.position || a.id.localeCompare(b.id)));
+    setPicked(created.id);
+    setMonsterId(created.id);
+    setSheet(actor);
+  }
+
+  async function updateMonster(id: string, vitals: { hp: number; mp: number; san: number; luck: number }) {
+    if (!recordPath) return;
+    setMonsters((current) => current.map((monster) => (monster.id === id ? { ...monster, ...vitals } : monster)));
+    await saveRecordMonster(recordPath, { id, ...vitals });
+  }
+
   async function purgeActor(id: string) {
     setRowMenu(null);
+    if (!editable || projectPath === "") return;
     if (draft?.actor?.id === id) setDraft(null);
     if (usingDb) {
       await deleteScenarioActor(projectPath, id);
@@ -138,13 +241,23 @@ export function NpcColumn({ locale, projectPath, selected }: { locale: ScenarioL
         data-actor={actor.kind}
         data-trashed={actor.trashed ? "true" : "false"}
         data-selected={picked === actor.id ? "true" : "false"}
-        draggable
+        draggable={editable}
         onDragStart={(event) => {
+          if (!editable) {
+            event.preventDefault();
+            return;
+          }
           event.dataTransfer.setData("text/plain", actor.id);
           event.dataTransfer.effectAllowed = "move";
         }}
         className={`flex h-7 cursor-default select-none items-center gap-2 px-2.5 ${picked === actor.id ? "bg-[#2563eb]/20 shadow-[inset_2px_0_0_#2563eb] dark:bg-[#60a5fa]/25 dark:shadow-[inset_2px_0_0_#60a5fa]" : "hover:bg-muted"}`}
         onClick={(event) => {
+          if (!editable) {
+            setPicked(actor.id);
+            setMonsterId(null);
+            setSheet(actor);
+            return;
+          }
           if (event.detail > 1) {
             setPicked(actor.id);
             return;
@@ -152,17 +265,42 @@ export function NpcColumn({ locale, projectPath, selected }: { locale: ScenarioL
           setPicked((current) => (current === actor.id ? null : actor.id));
         }}
         onDoubleClick={() => {
+          if (!editable) return;
           setPicked(actor.id);
           setDraft({ kind: actor.kind, actor });
         }}
         onContextMenu={(event) => {
+          if (!editable) {
+            event.preventDefault();
+            return;
+          }
           event.preventDefault();
           setRowMenu({ id: actor.id, trashed: actor.trashed, x: event.clientX, y: event.clientY });
         }}
       >
         {actor.portrait ? <StoredPortrait projectPath={projectPath} src={actor.portrait} className="size-6 shrink-0 rounded-full object-cover" /> : null}
         <span className="min-w-0 flex-1 truncate">{actor.name}</span>
-        <span className="shrink-0 text-[11px] text-muted-foreground">{actor.kind === "npc" ? "NPC" : t("monster")}</span>
+        <span className="flex w-16 shrink-0 items-center justify-end gap-1.5">
+          <span className="w-8 text-right text-[11px] text-muted-foreground">{actor.kind === "npc" ? "NPC" : t("monster")}</span>
+          <span className="grid size-5 place-items-center">
+            {!editable && actor.kind === "npc" && <NpcMark actor={actor} row={recordActors.find((row) => row.actorId === actor.id)} label={t} onActivate={() => void activateNpc(actor)} />}
+            {!editable && actor.kind === "monster" && (
+              <button
+                type="button"
+                title={t("create")}
+                aria-label={t("create")}
+                data-monster-add={actor.id}
+                className="grid size-5 place-items-center rounded text-muted-foreground hover:bg-background hover:text-foreground"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void addMonster(actor);
+                }}
+              >
+                <Plus className="size-3.5" />
+              </button>
+            )}
+          </span>
+        </span>
       </div>
     );
   }
@@ -181,18 +319,20 @@ export function NpcColumn({ locale, projectPath, selected }: { locale: ScenarioL
         >
           <Filter className="size-3.5" />
         </button>
-        <button
-          type="button"
-          title={t("create")}
-          data-npc-add=""
-          className="grid size-6 place-items-center rounded font-normal hover:bg-muted"
-          onClick={(event) => {
-            const bounds = event.currentTarget.getBoundingClientRect();
-            setMenu({ x: bounds.right, y: bounds.bottom + 4 });
-          }}
-        >
-          <Plus className="size-3.5" />
-        </button>
+        {editable && (
+          <button
+            type="button"
+            title={t("create")}
+            data-npc-add=""
+            className="grid size-6 place-items-center rounded font-normal hover:bg-muted"
+            onClick={(event) => {
+              const bounds = event.currentTarget.getBoundingClientRect();
+              setMenu({ x: bounds.right, y: bounds.bottom + 4 });
+            }}
+          >
+            <Plus className="size-3.5" />
+          </button>
+        )}
       </div>
       <div
         className="min-h-0 flex-1 overflow-auto py-1"
@@ -204,11 +344,39 @@ export function NpcColumn({ locale, projectPath, selected }: { locale: ScenarioL
           if (actor?.trashed) void moveActor(id, false);
         }}
       >
-        {(linkedOnly ? actors.filter((actor) => !actor.trashed && selected !== "" && actor.links.includes(selected)) : actors.filter((actor) => !actor.trashed)).map((actor) => renderActor(actor))}
+        {(linkedOnly ? actors.filter((actor) => !actor.trashed && selected !== "" && actor.links.includes(selected)) : actors.filter((actor) => !actor.trashed)).map((actor) => (
+          <div key={actor.id}>
+            {renderActor(actor)}
+            {!editable && actor.kind === "monster" && monsters.filter((monster) => monster.actorId === actor.id).map((monster, index) => (
+              <div
+                key={monster.id}
+                data-monster={monster.id}
+                data-selected={picked === monster.id ? "true" : "false"}
+                className={`flex h-7 cursor-default select-none items-center pl-7 pr-2.5 ${picked === monster.id ? "bg-[#2563eb]/20 shadow-[inset_2px_0_0_#2563eb] dark:bg-[#60a5fa]/25 dark:shadow-[inset_2px_0_0_#60a5fa]" : "hover:bg-muted"}`}
+                onClick={() => {
+                  setPicked(monster.id);
+                  setMonsterId(monster.id);
+                  setSheet(actor);
+                }}
+              >
+                <span className="min-w-0 flex-1 truncate">{actor.name} {index + 1}</span>
+                <span className="grid size-5 shrink-0 place-items-center">
+                  <span
+                    title={monster.hp <= 0 ? t("npcDown") : undefined}
+                    data-monster-state={monster.hp <= 0 ? "down" : "on"}
+                    className={`size-2.5 rounded-full ${monster.hp <= 0 ? "bg-red-500" : "bg-green-500"}`}
+                  />
+                </span>
+              </div>
+            ))}
+          </div>
+        ))}
       </div>
-      <ListTrash title={t("trash")} open={trashOpen} onToggle={() => setTrashOpen((open) => !open)} onReceive={(id) => void moveActor(id, true)}>
-        {actors.filter((actor) => actor.trashed).map((actor) => renderActor(actor))}
-      </ListTrash>
+      {editable && (
+        <ListTrash title={t("trash")} open={trashOpen} onToggle={() => setTrashOpen((open) => !open)} onReceive={(id) => void moveActor(id, true)}>
+          {actors.filter((actor) => actor.trashed).map((actor) => renderActor(actor))}
+        </ListTrash>
+      )}
       {menu && (
         <div
           data-npc-menu=""
@@ -240,7 +408,32 @@ export function NpcColumn({ locale, projectPath, selected }: { locale: ScenarioL
           </button>
         </div>
       )}
-      {draft && (
+      {!editable && sheet && (() => {
+        const base = actors.find((actor) => actor.id === sheet.id) ?? sheet;
+        const record = recordActors.find((row) => row.actorId === base.id);
+        const instance = monsters.find((monster) => monster.id === monsterId) ?? null;
+        const npcLive = base.kind === "npc" && record && !instance ? record : null;
+        return (
+          <ReadOnlyActorSheet
+            locale={locale}
+            projectPath={projectPath}
+            actor={base}
+            vitals={instance ?? npcLive}
+            titleId={titleId}
+            onClose={() => {
+              setSheet(null);
+              setMonsterId(null);
+            }}
+            onSaveVitals={(next) => {
+              if (monsterId) void updateMonster(monsterId, next);
+              else if (npcLive) void updateNpc(base.id, next);
+            }}
+            onActivate={base.kind === "npc" && !record && !instance ? () => void activateNpc(base) : undefined}
+            onReset={npcLive ? () => void resetNpc(base) : undefined}
+          />
+        );
+      })()}
+      {editable && draft && (
         <ActorDialog
           key={draft.actor?.id ?? `new-${draft.kind}`}
           locale={locale}
@@ -249,10 +442,421 @@ export function NpcColumn({ locale, projectPath, selected }: { locale: ScenarioL
           actor={draft.actor}
           selected={selected}
           titleId={titleId}
+          editable={editable}
           onCancel={() => setDraft(null)}
           onSave={(actor, articleIds) => void save(actor, articleIds)}
         />
       )}
+    </div>
+  );
+}
+
+function ReadOnlyActorSheet({
+  locale,
+  projectPath,
+  actor,
+  vitals,
+  titleId,
+  onClose,
+  onSaveVitals,
+  onActivate,
+  onReset,
+}: {
+  locale: ScenarioLocale;
+  projectPath: string;
+  actor: Actor;
+  vitals: { hp: number; mp: number; san: number; luck: number } | null;
+  titleId: string;
+  onClose: () => void;
+  onSaveVitals: (next: { hp: number; mp: number; san: number; luck: number }) => void;
+  onActivate?: () => void;
+  onReset?: () => void;
+}) {
+  const t = (key: ScenarioStringKey) => scenarioT(locale, key);
+  const confirmId = useId();
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [hp, setHp] = useState(String(vitals?.hp ?? actor.derived.hp));
+  const [mp, setMp] = useState(String(vitals?.mp ?? actor.derived.mp));
+  const [san, setSan] = useState(String(vitals?.san ?? actor.derived.san));
+  const [luck, setLuck] = useState(String(vitals?.luck ?? actor.stats.luck));
+  useEffect(() => {
+    setHp(String(vitals?.hp ?? actor.derived.hp));
+    setMp(String(vitals?.mp ?? actor.derived.mp));
+    setSan(String(vitals?.san ?? actor.derived.san));
+    setLuck(String(vitals?.luck ?? actor.stats.luck));
+  }, [actor, vitals]);
+
+  function commit(field: "hp" | "mp" | "san" | "luck", value: string) {
+    if (!vitals) return;
+    const next = { hp, mp, san, luck, [field]: value };
+    onSaveVitals({ hp: wholeAtLeastZero(next.hp), mp: wholeAtLeastZero(next.mp), san: wholeAtLeastZero(next.san), luck: wholeAtLeastZero(next.luck) });
+  }
+  const [articles, setArticles] = useState<ScenarioArticle[]>(readArticles);
+  const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
+  useEffect(() => subscribeArticles(setArticles), []);
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (confirmReset) {
+        setConfirmReset(false);
+        return;
+      }
+      onClose();
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [onClose, confirmReset]);
+
+  const linkedArticles = articles.filter((item) => item.actors.includes(actor.id));
+  const stats = [
+    ["str", actor.stats.str],
+    ["con", actor.stats.con],
+    ["siz", actor.stats.siz],
+    ["dex", actor.stats.dex],
+    ["app", actor.stats.app],
+    ["int", actor.stats.int],
+    ["pow", actor.stats.pow],
+    ["edu", actor.stats.edu],
+  ] as const;
+
+  return (
+    <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-6" onPointerDown={onClose}>
+      <div
+        role="dialog"
+        aria-labelledby={titleId}
+        data-actor-sheet={actor.kind}
+        className="relative flex max-h-full w-[min(660px,100%)] flex-col rounded-md border border-border bg-background text-[13px] shadow-lg"
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <div className="flex shrink-0 items-center justify-end gap-2 border-b border-border px-3 py-2">
+          {onActivate && (
+            <button type="button" className="rounded-md bg-primary px-3 py-1 text-sm text-primary-foreground" onClick={onActivate}>
+              {t("activateNpc")}
+            </button>
+          )}
+          {onReset && (
+            <button type="button" className="rounded-md bg-primary px-3 py-1 text-sm text-primary-foreground" onClick={() => setConfirmReset(true)}>
+              {t("reset")}
+            </button>
+          )}
+          <button
+            type="button"
+            aria-label={t("close")}
+            className="grid size-7 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+            onClick={onClose}
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+        <div className="overflow-auto p-4">
+        {actor.kind === "monster" ? (
+          <MonsterSheetBody
+            actor={actor}
+            locale={locale}
+            articles={linkedArticles}
+            hp={hp}
+            mp={mp}
+            editable={vitals !== null}
+            setHp={setHp}
+            setMp={setMp}
+            commit={commit}
+            setTip={setTip}
+          />
+        ) : (
+        <>
+        <div className="grid grid-cols-[minmax(0,1fr)_11.25rem] items-start gap-x-6">
+          <div className="min-w-0">
+            <h2 id={titleId} className="sr-only">{actor.name}</h2>
+            <div className="grid grid-cols-4 gap-x-4 gap-y-2 border-b border-border pb-3">
+              <Fact label={t("fullName")} value={actor.name} />
+              <Fact label={t("occupation")} value={actor.occupation} />
+              <Fact label={t("gender")} value={actor.gender} />
+              <Fact label={t("age")} value={actor.age} />
+              <Fact label={t("nativeLanguage")} value={actor.nativeLanguage} />
+              <Fact label={t("damage")} value={actor.derived.damage} />
+              <Fact label={t("build")} value={String(actor.derived.build)} />
+              <Fact label={t("mov")} value={String(actor.derived.mov)} />
+              <Vital label={t("hp")} value={hp} editable={vitals !== null} onChange={setHp} onCommit={(value) => commit("hp", value)} />
+              <Vital label={t("mp")} value={mp} editable={vitals !== null} onChange={setMp} onCommit={(value) => commit("mp", value)} />
+              <Vital label={t("san")} value={san} editable={vitals !== null} onChange={setSan} onCommit={(value) => commit("san", value)} />
+              <Vital label={t("luck")} value={luck} editable={vitals !== null} onChange={setLuck} onCommit={(value) => commit("luck", value)} />
+            </div>
+            <div className="mt-4 space-y-3">
+              <div className="border-b border-border pb-3">
+                <Prose label={t("appearance")} value={actor.appearance} />
+              </div>
+              <Prose label={t("portrayal")} value={actor.portrayal} />
+            </div>
+          </div>
+          <div className="min-w-0">
+            {actor.portrait ? (
+              <StoredPortrait projectPath={projectPath} src={actor.portrait} className="h-36 w-full rounded-md object-contain" />
+            ) : actor.kind === "npc" ? (
+              <div className="grid h-36 w-full place-items-center rounded-md bg-sky-100 text-sky-600">
+                <User className="size-16" strokeWidth={1.5} />
+              </div>
+            ) : (
+              <div className="h-36 w-full rounded-md bg-muted" />
+            )}
+            <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1">
+              {stats.map(([key, value]) => (
+                <Fact key={key} label={t(key)} value={String(value)} />
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="mt-4 space-y-3 border-t border-border pt-3">
+          <div className="border-b border-border pb-3">
+            <Prose label={t("backstory")} value={actor.backstory} />
+          </div>
+          <Prose label={t("notes")} value={actor.notes} />
+        </div>
+        <div className="mt-4 border-t border-border pt-3">
+          <div className="text-[14px] text-muted-foreground">{t("clues")}</div>
+          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[16px]">
+            {linkedArticles.length === 0 ? <span>—</span> : linkedArticles.map((item) => (
+              <span
+                key={item.id}
+                data-article-link={item.id}
+                data-trashed={item.trashed ? "true" : "false"}
+                className={item.trashed ? "text-muted-foreground opacity-60" : ""}
+                onMouseEnter={(event) => {
+                  const box = event.currentTarget.getBoundingClientRect();
+                  setTip({ text: item.description, x: box.left, y: box.bottom + 6 });
+                }}
+                onMouseLeave={() => setTip(null)}
+              >
+                {item.name || (item.kind === "clue" ? t("untitledClue") : t("untitledItem"))}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="mt-4 border-t border-border pt-3">
+          <div className="text-[14px] text-muted-foreground">{t("skills")}</div>
+          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[16px]">
+            {actor.skills.length === 0 ? <span>—</span> : actor.skills.map((skill, index) => (
+              <span key={`${skill.name}-${index}`}>{skill.name} {skill.value}</span>
+            ))}
+          </div>
+        </div>
+        <div className="mt-4 border-t border-border pt-3">
+          <div className="text-[14px] text-muted-foreground">{t("weapons")}</div>
+          <div className="mt-1 space-y-2">
+            {actor.attacks.length === 0 ? <span className="text-[16px]">—</span> : actor.attacks.map((attack, index) => (
+              <div key={`${attack.name}-${index}`} className="flex flex-wrap gap-x-4 gap-y-1">
+                <Fact label={t("weaponName")} value={attack.name} />
+                <Fact label={t("skillValue")} value={String(attack.chance)} />
+                <Fact label={t("weaponDamage")} value={attack.damage} />
+                <Fact label={t("weaponNote")} value={attack.note} />
+              </div>
+            ))}
+          </div>
+        </div>
+        </>
+        )}
+        </div>
+        {confirmReset && onReset && (
+          <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-6" onPointerDown={() => setConfirmReset(false)}>
+            <div
+              role="alertdialog"
+              aria-labelledby={confirmId}
+              data-reset-confirm=""
+              className="w-[min(360px,100%)] rounded-md border border-border bg-background p-4 shadow-lg"
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <h2 id={confirmId} className="text-sm font-semibold">{t("reset")}</h2>
+              <p className="mt-2 text-[13px]">{t("resetStateAsk")}</p>
+              <div className="mt-4 flex justify-end gap-2">
+                <button type="button" className="rounded-md px-3 py-1 hover:bg-muted" onClick={() => setConfirmReset(false)}>
+                  {t("cancel")}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md bg-primary px-3 py-1 text-primary-foreground"
+                  onClick={() => {
+                    setConfirmReset(false);
+                    onReset();
+                  }}
+                >
+                  {t("confirm")}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {tip && (
+          <div
+            className="pointer-events-none fixed z-50 w-56 rounded-md border border-border bg-popover px-2 py-1 text-[14px] whitespace-pre-wrap text-popover-foreground shadow-md"
+            style={{ left: tip.x, top: tip.y }}
+          >
+            {tip.text.trim() ? tip.text : "—"}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MonsterSheetBody({
+  actor,
+  locale,
+  articles,
+  hp,
+  mp,
+  editable,
+  setHp,
+  setMp,
+  commit,
+  setTip,
+}: {
+  actor: Actor;
+  locale: ScenarioLocale;
+  articles: ScenarioArticle[];
+  hp: string;
+  mp: string;
+  editable: boolean;
+  setHp: (value: string) => void;
+  setMp: (value: string) => void;
+  commit: (field: "hp" | "mp" | "san" | "luck", value: string) => void;
+  setTip: (tip: { text: string; x: number; y: number } | null) => void;
+}) {
+  const t = (key: ScenarioStringKey) => scenarioT(locale, key);
+  return (
+    <div>
+      <div className="grid grid-cols-3 gap-x-4 gap-y-2">
+        <Fact label={t("actorName")} value={actor.name} />
+        <Vital label={t("hp")} value={hp} editable={editable} onChange={setHp} onCommit={(value) => commit("hp", value)} />
+        <Vital label={t("mp")} value={mp} editable={editable} onChange={setMp} onCommit={(value) => commit("mp", value)} />
+        <Fact label={t("damage")} value={actor.derived.damage} />
+        <Fact label={t("build")} value={String(actor.derived.build)} />
+        <Fact label={t("mov")} value={String(actor.derived.mov)} />
+      </div>
+      <div className="mt-4 border-t border-border pt-3">
+        <div className="text-[14px] text-muted-foreground">{t("weapons")}</div>
+        <div className="mt-1 space-y-2">
+          {actor.attacks.length === 0 ? <span className="text-[16px]">—</span> : actor.attacks.map((attack, index) => (
+            <div key={`${attack.name}-${index}`} className="flex flex-wrap gap-x-4 gap-y-1">
+              <Fact label={t("weaponName")} value={attack.name} />
+              <Fact label={t("skillValue")} value={String(attack.chance)} />
+              <Fact label={t("weaponDamage")} value={attack.damage} />
+              <Fact label={t("weaponNote")} value={attack.note} />
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="mt-4 border-t border-border pt-3">
+        <div className="text-[14px] text-muted-foreground">{t("clues")}</div>
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[16px]">
+          {articles.length === 0 ? <span>—</span> : articles.map((item) => (
+            <span
+              key={item.id}
+              className={item.trashed ? "text-muted-foreground opacity-60" : ""}
+              onMouseEnter={(event) => {
+                const box = event.currentTarget.getBoundingClientRect();
+                setTip({ text: item.description, x: box.left, y: box.bottom + 6 });
+              }}
+              onMouseLeave={() => setTip(null)}
+            >
+              {item.name || (item.kind === "clue" ? t("untitledClue") : t("untitledItem"))}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="mt-4 space-y-3 border-t border-border pt-3">
+        <div className="border-b border-border pb-3">
+          <Prose label={t("appearance")} value={actor.appearance} />
+        </div>
+        <Prose label={t("notes")} value={actor.notes} />
+      </div>
+    </div>
+  );
+}
+
+function Vital({
+  label,
+  value,
+  editable,
+  onChange,
+  onCommit,
+}: {
+  label: string;
+  value: string;
+  editable: boolean;
+  onChange: (value: string) => void;
+  onCommit: (value: string) => void;
+}) {
+  return (
+    <span className="inline-flex items-baseline gap-1 whitespace-nowrap">
+      <span className="shrink-0 text-[14px] text-muted-foreground">{label}</span>
+      {editable ? (
+        <input
+          type="number"
+          min={0}
+          step={1}
+          value={value}
+          className="w-12 max-w-12 shrink border-b border-border bg-transparent text-[16px] outline-none"
+          onChange={(event) => {
+            const raw = event.target.value;
+            if (raw !== "" && !/^\d+$/.test(raw)) return;
+            onChange(raw);
+            if (/^\d+$/.test(raw)) onCommit(raw);
+          }}
+          onBlur={(event) => {
+            const next = event.target.value.trim() === "" ? "0" : String(wholeAtLeastZero(event.target.value));
+            onChange(next);
+            onCommit(next);
+          }}
+        />
+      ) : (
+        <span className="text-[16px]">{value.trim() ? value : "—"}</span>
+      )}
+    </span>
+  );
+}
+
+function NpcMark({
+  actor,
+  row,
+  label,
+  onActivate,
+}: {
+  actor: Actor;
+  row: RecordActorVitals | undefined;
+  label: (key: ScenarioStringKey) => string;
+  onActivate: () => void;
+}) {
+  const state = !row ? "off" : row.hp <= 0 ? "down" : "on";
+  const title = state === "off" ? label("activateNpc") : state === "down" ? label("npcDown") : label("npcActive");
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      data-npc-state={state}
+      data-npc-activate={actor.id}
+      className={`size-2.5 shrink-0 rounded-full ${state === "off" ? "bg-zinc-400" : state === "down" ? "bg-red-500" : "bg-green-500"}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        if (state === "off") onActivate();
+      }}
+    />
+  );
+}
+
+function Fact({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="inline-flex min-w-0 items-baseline gap-1">
+      <span className="text-[14px] text-muted-foreground">{label}</span>
+      <span className="text-[16px]">{value.trim() ? value : "—"}</span>
+    </span>
+  );
+}
+
+function Prose({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-[14px] text-muted-foreground">{label}</div>
+      <p className="mt-0.5 whitespace-pre-wrap text-[14px]">{value.trim() ? value : "—"}</p>
     </div>
   );
 }
@@ -264,6 +868,7 @@ function ActorDialog({
   actor,
   selected,
   titleId,
+  editable,
   onCancel,
   onSave,
 }: {
@@ -273,8 +878,9 @@ function ActorDialog({
   actor: Actor | null;
   selected: string;
   titleId: string;
+  editable: boolean;
   onCancel: () => void;
-          onSave: (actor: Actor, articleIds: string[]) => void | Promise<void>;
+  onSave: (actor: Actor, articleIds: string[]) => void | Promise<void>;
 }) {
   const t = (key: ScenarioStringKey) => scenarioT(locale, key);
   const [name, setName] = useState(actor?.name ?? "");
@@ -457,9 +1063,11 @@ function ActorDialog({
         onPointerDown={(event) => event.stopPropagation()}
         onSubmit={(event) => {
           event.preventDefault();
+          if (!editable) return;
           submit();
         }}
       >
+        <fieldset disabled={!editable} className="min-w-0 border-0 p-0">
         <h2 id={titleId} className="mb-3 text-sm font-semibold">
           {actor ? name.trim() || (kind === "npc" ? t("untitledNpc") : t("untitledMonster")) : kind === "npc" ? t("newCocNpc") : t("quickMonster")}
         </h2>
@@ -597,13 +1205,16 @@ function ActorDialog({
             </div>
           </div>
         )}
+        </fieldset>
         <div className="mt-3 flex justify-end gap-2">
           <button type="button" className="rounded-md px-3 py-1 hover:bg-muted" onClick={onCancel}>
-            {t("cancel")}
+            {editable ? t("cancel") : t("close")}
           </button>
-          <button type="submit" className="rounded-md bg-primary px-3 py-1 text-primary-foreground">
-            {actor ? t("save") : t("create")}
-          </button>
+          {editable && (
+            <button type="submit" className="rounded-md bg-primary px-3 py-1 text-primary-foreground">
+              {actor ? t("save") : t("create")}
+            </button>
+          )}
         </div>
         {saveFailed ? <p className="mt-2 text-xs text-destructive">{t("actorSaveFailed")}</p> : null}
       </form>
@@ -628,6 +1239,7 @@ function PortraitPicker({
 
   async function pick(file: File | undefined) {
     if (!file || !file.type.startsWith("image/")) return;
+    if (!projectPath) return;
     onChange(await savePastedImage(projectPath, file));
   }
 
@@ -809,6 +1421,12 @@ function derivedFromText(text: DerivedText): Derived {
     build: numberOrZero(text.build),
     mov: numberOrZero(text.mov),
   };
+}
+
+function wholeAtLeastZero(value: string) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.trunc(parsed));
 }
 
 function numberOrZero(value: string): number {
