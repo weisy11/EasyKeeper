@@ -261,6 +261,10 @@ function HeaderActions(props: IDockviewHeaderActionsProps) {
   );
 }
 
+function BlankPanel() {
+  return <div className="h-full bg-background" data-play-blank="" />;
+}
+
 function Watermark(_: IWatermarkPanelProps) {
   const tr = useT();
   return (
@@ -270,7 +274,7 @@ function Watermark(_: IWatermarkPanelProps) {
   );
 }
 
-const components = { tool: ToolPanel };
+const components = { tool: ToolPanel, blank: BlankPanel };
 
 function WorkspaceView({ id, visible }: { id: string; visible: boolean }) {
   const { theme } = useStore(settingsStore);
@@ -283,6 +287,9 @@ function WorkspaceView({ id, visible }: { id: string; visible: boolean }) {
       await ctrl.restore(saved);
       if (missing.length) appLog(`⚠ ${id}: layout references unknown tools: ${missing.join(", ")}`);
       appLog(`↻ ${id}: layout restored from autosave (${saved.savedAt})`);
+    } else if (sessionStore.get()?.mode === "play") {
+      await ctrl.buildPlay();
+      appLog(`★ ${id}: play layout`);
     } else {
       await ctrl.buildDefault();
       appLog(`★ ${id}: built-in default layout`);

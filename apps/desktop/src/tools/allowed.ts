@@ -15,10 +15,14 @@ function loadInitial(): string[] {
       const parsed = JSON.parse(raw) as string[];
       if (Array.isArray(parsed)) {
         const ids = parsed.filter((id) => !!CATALOG_MAP[id]);
-        if (!ids.includes("ek.scenario")) {
-          ids.push("ek.scenario");
-          localStorage.setItem(KEY, JSON.stringify(ids));
+        let changed = false;
+        for (const id of ["ek.scenario", "ek.character"]) {
+          if (!ids.includes(id)) {
+            ids.push(id);
+            changed = true;
+          }
         }
+        if (changed) localStorage.setItem(KEY, JSON.stringify(ids));
         return ids;
       }
     }
