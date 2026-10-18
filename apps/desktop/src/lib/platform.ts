@@ -37,6 +37,12 @@ export async function resetMainWindowState() {
   if (isTauri) await invoke("reset_main_window_state");
 }
 
+/** Welcome stays a small window. Project size on disk is left alone until a project is open. */
+export async function setWelcomeWindow(welcome: boolean) {
+  if (!isTauri) return;
+  await invoke("set_welcome_window", { welcome });
+}
+
 export async function setMainWindowSize(width: number, height: number) {
   if (!isTauri) return;
   const { getCurrentWindow, LogicalSize } = await import("@tauri-apps/api/window");

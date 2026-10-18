@@ -12,7 +12,7 @@ import {
 } from "../cocD100";
 import { compactDiceExpression, normalizeDiceExpression, withFairForcedResults, type ExprErrorKind } from "../fairRoll";
 import { diceT, readDiceLocale, type DiceLocale } from "../i18n";
-import { markDiceHeavyLoaded, registerDiceBox, unregisterDiceBox } from "../runtime";
+import { registerDiceBox, unregisterDiceBox } from "../runtime";
 
 const QUICK = ["d4", "d6", "d8", "d10", "d12", "d20", "d100"] as const;
 const COC_BP_MAX = 5;
@@ -227,7 +227,6 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
         const mod = await import("../../vendor/dice-box-threejs/dist/dice-box-threejs.es.js");
         const DiceBox = (mod.default ?? mod) as DiceBoxCtor;
         if (cancelled) return;
-        markDiceHeavyLoaded();
 
         const box = new DiceBox(`#${stageId}`, {
           assetPath: assetPath(),

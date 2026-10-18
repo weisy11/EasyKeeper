@@ -6,6 +6,13 @@ export type ToolRegion = "center" | "left" | "right" | "bottom";
 
 export type ToolPanelProps = {
   panelId: string;
+  /** Open project directory. Empty when no project is open. */
+  projectPath: string;
+  /** Scenario directory for a game record. Empty in prep. */
+  modulePath?: string | null;
+  mode?: "prep" | "play";
+  /** Play mode writes the scenario only while this is on. Prep ignores it. */
+  moduleEditable?: boolean;
 };
 
 export type ToolPanelDef = {
@@ -27,23 +34,11 @@ export type ToolDefinition = {
   panels: ToolPanelDef[];
   /**
    * Called by the host when this tool's window is closed.
-   * Must release third-party runtime resources (WebGL, audio, listeners, caches).
+   * Release this instance (WebGL, audio, listeners). Loaded code stays until the app exits.
    */
   dispose?: () => void | Promise<void>;
-  /** Host sets/reads whether heavy deps were dynamically loaded this session. */
-  markHeavyLoaded?: () => void;
-  wasHeavyLoaded?: () => boolean;
 };
 
 export function defineTool(def: ToolDefinition): ToolDefinition {
-  let heavy = false;
-  return {
-    ...def,
-    dependencies: def.dependencies ?? [],
-    markHeavyLoaded: () => {
-      heavy = true;
-      def.markHeavyLoaded?.();
-    },
-    wasHeavyLoaded: () => heavy || def.wasHeavyLoaded?.() === true,
-  };
+  return { ...def, dependencies: def.dependencies ?? [] };
 }

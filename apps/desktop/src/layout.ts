@@ -27,9 +27,26 @@ export type WorkspaceMeta = { id: string; name: string };
 export type WorkspacesState = { list: WorkspaceMeta[]; active: string };
 
 export const workspacesStore = createStore<WorkspacesState>(
-  { list: [{ id: "ws-1", name: "Session" }, { id: "ws-2", name: "Prep" }], active: "ws-1" },
+  { list: [{ id: "ws-1", name: "Main" }], active: "ws-1" },
   "ek.workspaces",
 );
+
+/** One layout only. Older saves may still list Session and Prep. */
+function keepActiveWorkspace(state: WorkspacesState): WorkspacesState {
+  const current = state.list.find((item) => item.id === state.active) ?? state.list[0];
+  const kept = current ?? { id: "ws-1", name: "Main" };
+  return { list: [kept], active: kept.id };
+}
+
+const loadedWorkspaces = workspacesStore.get();
+const singleWorkspace = keepActiveWorkspace(loadedWorkspaces);
+if (
+  loadedWorkspaces.list.length !== 1 ||
+  loadedWorkspaces.active !== singleWorkspace.active ||
+  loadedWorkspaces.list[0]?.id !== singleWorkspace.list[0].id
+) {
+  workspacesStore.set(singleWorkspace);
+}
 
 export const presetsStore = createStore<{ items: { name: string; snapshot: LayoutSnapshot }[] }>({ items: [] }, "ek.presets");
 
@@ -136,7 +153,7 @@ export class WorkspaceController {
     this.restoring = true;
     for (const p of [...api.panels]) {
       const toolId = String((p.params as { toolId?: string } | undefined)?.toolId ?? p.id);
-      await closeTool(toolId, { skipReload: true });
+      await closeTool(toolId);
     }
     api.clear();
     for (const pos of EDGES) {
@@ -144,7 +161,7 @@ export class WorkspaceController {
     }
     this.userCollapsed = { left: false, right: false, bottom: false };
     this.restoring = false;
-    await openTools(["ek.dice"], this.panelCtx());
+    await openTools(["ek.scenario"], this.panelCtx());
     this.applyAutoCollapse(liveStore.get().auto);
     bumpLive();
   }
@@ -379,7 +396,7 @@ export class WorkspaceController {
     this.restoring = true;
     for (const p of [...this.api.panels]) {
       const toolId = String((p.params as { toolId?: string } | undefined)?.toolId ?? p.id);
-      await closeTool(toolId, { skipReload: true });
+      await closeTool(toolId);
     }
     await clearPopoutQueue();
     for (const p of this.api.getPopouts()) {
@@ -419,6 +436,12 @@ export class WorkspaceController {
     this.restoring = false;
     this.applyAutoCollapse(this.autoState);
     bumpLive();
+  }
+
+  /** Stop layout writes while the project view is being torn down. */
+  beginClose() {
+    this.restoring = true;
+    window.clearTimeout(this.saveTimer);
   }
 
   scheduleSave() {

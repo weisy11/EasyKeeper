@@ -2,7 +2,7 @@ import type { ComponentType } from "react";
 import { DicesIcon } from "lucide-react";
 import { defineTool } from "@ek/tool-api";
 import { DiceRollerPanel } from "./panels/RollerPanel";
-import { disposeDiceRuntime, wasDiceHeavyLoaded } from "./runtime";
+import { disposeDiceRuntime } from "./runtime";
 
 /**
  * Thin tool entry — do not statically import vendor/three here.
@@ -18,5 +18,4 @@ export const diceTool = defineTool({
   dependencies: [],
   panels: [{ id: "roller", component: DiceRollerPanel }],
   dispose: () => disposeDiceRuntime(),
-  wasHeavyLoaded: () => wasDiceHeavyLoaded(),
 });

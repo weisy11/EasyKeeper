@@ -130,17 +130,13 @@ export async function openTool(id: string, ctx: PanelCtx) {
 }
 
 /**
- * Close one tool window: dispose runtime, drop from loaded map.
- * Does not cascade to dependents. Reloads window if heavy deps were loaded
- * (unless skipReload — used while clearing/restoring layout).
+ * Close one tool window: dispose its runtime instance and drop it from the loaded map.
+ * The tool's code stays in this page until the app exits. The next launch loads only
+ * tools that are still in the saved layout.
  */
-export async function closeTool(
-  id: string,
-  opts?: { closePanel?: ClosePanelFn; hasPanel?: HasPanelFn; skipReload?: boolean },
-) {
+export async function closeTool(id: string, opts?: { closePanel?: ClosePanelFn; hasPanel?: HasPanelFn }) {
   if (opts?.hasPanel?.(id)) opts.closePanel?.(id);
   const tool = getLoadedTool(id);
-  const heavy = tool?.wasHeavyLoaded?.() === true;
   try {
     await tool?.dispose?.();
   } catch (e) {
@@ -153,8 +149,4 @@ export async function closeTool(
     delete errors[id];
     return { byId, errors };
   });
-  if (heavy && !opts?.skipReload) {
-    appLog(`↻ reloading to drop heavy modules after closing ${id}`);
-    setTimeout(() => location.reload(), 50);
-  }
 }

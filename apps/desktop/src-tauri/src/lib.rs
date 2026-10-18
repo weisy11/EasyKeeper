@@ -1,10 +1,17 @@
 mod geometry;
+mod project_db;
+mod session;
+mod snapshot;
 
 use geometry::{MainWindowState, Rect};
+use session::{session_get, session_set, LaunchMemory};
+use snapshot::{create_project_snapshot, delete_project_snapshot, list_project_snapshots};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID};
 use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
@@ -29,6 +36,12 @@ struct PopoutQueue(Mutex<VecDeque<PendingPopout>>);
 
 #[derive(Default)]
 struct MainGeometry(Mutex<Option<MainWindowState>>);
+
+/// While the welcome page is up, resize events must not replace the project window frame.
+struct PersistMainWindow(AtomicBool);
+
+const WELCOME_W: f64 = 860.0;
+const WELCOME_H: f64 = 564.0;
 
 #[derive(Clone, Serialize)]
 struct PopoutCreated {
@@ -68,6 +81,9 @@ fn reset_main_window_state(app: AppHandle) {
 }
 
 fn record_main_geometry(app: &AppHandle) {
+  if !app.state::<PersistMainWindow>().0.load(Ordering::SeqCst) {
+    return;
+  }
   let Some(w) = app.get_webview_window("main") else { return };
   let maximized = w.is_maximized().unwrap_or(false);
   let fullscreen = w.is_fullscreen().unwrap_or(false);
@@ -108,8 +124,308 @@ fn write_text_file(path: String, contents: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn remove_file(path: String) -> Result<(), String> {
+  let file = std::path::Path::new(&path);
+  if file.is_dir() {
+    return Err("not a file".to_string());
+  }
+  match std::fs::remove_file(file) {
+    Ok(()) => Ok(()),
+    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+    Err(err) => Err(err.to_string()),
+  }
+}
+
+#[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
   std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_base64_file(path: String, contents: String) -> Result<(), String> {
+  use base64::Engine;
+  let bytes = base64::engine::general_purpose::STANDARD
+    .decode(contents.trim())
+    .map_err(|err| err.to_string())?;
+  if let Some(parent) = std::path::Path::new(&path).parent() {
+    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+  }
+  std::fs::write(&path, bytes).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn read_base64_file(path: String) -> Result<String, String> {
+  use base64::Engine;
+  let bytes = std::fs::read(&path).map_err(|err| err.to_string())?;
+  Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+#[tauri::command]
+fn project_db_exec(project_path: String, tool_prefix: String, sql: String, params: Option<Vec<serde_json::Value>>) -> Result<(), String> {
+  project_db::exec(&project_path, &tool_prefix, &sql, &params.unwrap_or_default())
+}
+
+#[tauri::command]
+fn project_db_query(project_path: String, tool_prefix: String, sql: String, params: Option<Vec<serde_json::Value>>) -> Result<Vec<serde_json::Value>, String> {
+  project_db::query(&project_path, &tool_prefix, &sql, &params.unwrap_or_default())
+}
+
+/// Linux `document_dir` fails when xdg user dirs are unset. Fall back to `$HOME/Documents` and do not create it.
+fn resolve_documents_dir(document: Option<&Path>, home: Option<&Path>) -> Result<PathBuf, String> {
+  if let Some(path) = document {
+    return Ok(path.to_path_buf());
+  }
+  home
+    .map(|path| path.join("Documents"))
+    .ok_or_else(|| "unable to determine base dir path".to_string())
+}
+
+#[tauri::command]
+fn documents_dir(app: AppHandle) -> Result<String, String> {
+  let document = app.path().document_dir().ok();
+  let home = app.path().home_dir().ok();
+  Ok(resolve_documents_dir(document.as_deref(), home.as_deref())?.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn join_path(parent: String, name: String) -> Result<String, String> {
+  if !valid_folder_name(&name) {
+    return Err("invalid-name".into());
+  }
+  Ok(std::path::Path::new(&parent).join(name).to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn ensure_dir(path: String) -> Result<(), String> {
+  std::fs::create_dir_all(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn path_exists(path: String) -> bool {
+  std::path::Path::new(&path).exists()
+}
+
+#[tauri::command]
+fn list_child_dirs(path: String) -> Result<Vec<String>, String> {
+  let mut names = Vec::new();
+  for entry in std::fs::read_dir(&path).map_err(|e| e.to_string())? {
+    let entry = entry.map_err(|e| e.to_string())?;
+    let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+    if !is_dir {
+      continue;
+    }
+    if let Some(name) = entry.file_name().to_str() {
+      names.push(name.to_string());
+    }
+  }
+  names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+  Ok(names)
+}
+
+fn welcome_origin(app: &AppHandle, anchor: Option<&MainWindowState>) -> Option<(f64, f64)> {
+  let monitors = app.available_monitors().ok()?;
+  let saved = anchor.map(|s| s.rect);
+  let monitor = saved.and_then(|rect| {
+    let cx = rect.x + rect.width / 2.0;
+    let cy = rect.y + rect.height / 2.0;
+    monitors.iter().find(|m| {
+      let p = m.position().to_logical::<f64>(m.scale_factor());
+      let s = m.size().to_logical::<f64>(m.scale_factor());
+      cx >= p.x && cx < p.x + s.width && cy >= p.y && cy < p.y + s.height
+    })
+  });
+  let m = monitor.or_else(|| monitors.first())?;
+  let p = m.position().to_logical::<f64>(m.scale_factor());
+  let s = m.size().to_logical::<f64>(m.scale_factor());
+  Some((p.x + (s.width - WELCOME_W) / 2.0, p.y + (s.height - WELCOME_H) / 2.0))
+}
+
+fn place_welcome(app: &AppHandle, window: &tauri::WebviewWindow) {
+  if window.is_maximized().unwrap_or(false) {
+    let _ = window.unmaximize();
+  }
+  let _ = window.set_fullscreen(false);
+  let _ = window.set_size(tauri::LogicalSize::new(WELCOME_W, WELCOME_H));
+  let saved = app.state::<MainGeometry>().0.lock().unwrap().clone();
+  if let Some((x, y)) = welcome_origin(app, saved.as_ref()) {
+    let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+  } else {
+    let _ = window.center();
+  }
+}
+
+fn place_project(app: &AppHandle, window: &tauri::WebviewWindow) {
+  let saved = app.state::<MainGeometry>().0.lock().unwrap().clone();
+  match saved {
+    Some(state) => {
+      let (rect, _) = geometry::fit_on_screen(app, state.rect);
+      let _ = window.set_size(tauri::LogicalSize::new(rect.width, rect.height));
+      let _ = window.set_position(tauri::LogicalPosition::new(rect.x, rect.y));
+      if state.maximized {
+        let _ = window.maximize();
+      }
+      if state.fullscreen {
+        let _ = window.set_fullscreen(true);
+      }
+    }
+    None => {
+      let _ = window.set_size(tauri::LogicalSize::new(1360.0, 820.0));
+      let _ = window.center();
+    }
+  }
+}
+
+const CLOSE_PROJECT_ID: &str = "close-project";
+
+fn close_project_item(app: &AppHandle) -> Option<MenuItem<tauri::Wry>> {
+  let menu = app.menu()?;
+  let items = menu.items().ok()?;
+  for item in items {
+    let Some(submenu) = item.as_submenu() else { continue };
+    let Some(kind) = submenu.get(CLOSE_PROJECT_ID) else { continue };
+    if let Some(entry) = kind.as_menuitem() {
+      return Some(entry.clone());
+    }
+  }
+  None
+}
+
+fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
+  let pkg = app.package_info();
+  let config = app.config();
+  let about = AboutMetadata {
+    name: Some(pkg.name.clone()),
+    version: Some(pkg.version.to_string()),
+    copyright: config.bundle.copyright.clone(),
+    authors: config.bundle.publisher.clone().map(|publisher| vec![publisher]),
+    ..Default::default()
+  };
+  let project_open = app.state::<LaunchMemory>().is_open();
+  let close_project = MenuItem::with_id(app, CLOSE_PROJECT_ID, "关闭项目", project_open, None::<&str>)?;
+  let window_menu = Submenu::with_id_and_items(
+    app,
+    WINDOW_SUBMENU_ID,
+    "Window",
+    true,
+    &[
+      &PredefinedMenuItem::minimize(app, None)?,
+      &PredefinedMenuItem::maximize(app, None)?,
+      #[cfg(target_os = "macos")]
+      &PredefinedMenuItem::separator(app)?,
+      &PredefinedMenuItem::close_window(app, None)?,
+    ],
+  )?;
+  let help_menu = Submenu::with_id_and_items(
+    app,
+    HELP_SUBMENU_ID,
+    "Help",
+    true,
+    &[
+      #[cfg(not(target_os = "macos"))]
+      &PredefinedMenuItem::about(app, None, Some(about.clone()))?,
+    ],
+  )?;
+  let menu = Menu::with_items(
+    app,
+    &[
+      #[cfg(target_os = "macos")]
+      &Submenu::with_items(
+        app,
+        pkg.name.clone(),
+        true,
+        &[
+          &PredefinedMenuItem::about(app, None, Some(about))?,
+          &PredefinedMenuItem::separator(app)?,
+          &PredefinedMenuItem::services(app, None)?,
+          &PredefinedMenuItem::separator(app)?,
+          &PredefinedMenuItem::hide(app, None)?,
+          &PredefinedMenuItem::hide_others(app, None)?,
+          &PredefinedMenuItem::separator(app)?,
+          &PredefinedMenuItem::quit(app, None)?,
+        ],
+      )?,
+      #[cfg(not(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd")))]
+      &Submenu::with_items(
+        app,
+        "File",
+        true,
+        &[
+          &close_project,
+          &PredefinedMenuItem::separator(app)?,
+          &PredefinedMenuItem::close_window(app, None)?,
+          #[cfg(not(target_os = "macos"))]
+          &PredefinedMenuItem::quit(app, None)?,
+        ],
+      )?,
+      #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
+      &Submenu::with_items(app, "File", true, &[&close_project])?,
+      &Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+          &PredefinedMenuItem::undo(app, None)?,
+          &PredefinedMenuItem::redo(app, None)?,
+          &PredefinedMenuItem::separator(app)?,
+          &PredefinedMenuItem::cut(app, None)?,
+          &PredefinedMenuItem::copy(app, None)?,
+          &PredefinedMenuItem::paste(app, None)?,
+          &PredefinedMenuItem::select_all(app, None)?,
+        ],
+      )?,
+      #[cfg(target_os = "macos")]
+      &Submenu::with_items(app, "View", true, &[&PredefinedMenuItem::fullscreen(app, None)?])?,
+      &window_menu,
+      &help_menu,
+    ],
+  )?;
+  app.set_menu(menu)?;
+  app.on_menu_event(|app, event| {
+    if event.id() == CLOSE_PROJECT_ID {
+      let _ = app.emit("ek:close-project", ());
+    }
+  });
+  Ok(())
+}
+
+#[tauri::command]
+fn set_close_project_label(app: AppHandle, text: String) {
+  if let Some(item) = close_project_item(&app) {
+    let _ = item.set_text(text);
+  }
+}
+
+#[tauri::command]
+fn close_project_connections(paths: Vec<String>) {
+  project_db::close_connections(&paths);
+}
+
+#[tauri::command]
+fn close_popout_windows(app: AppHandle) {
+  let labels: Vec<String> = app.webview_windows().keys().filter(|label| label.starts_with("popout-")).cloned().collect();
+  for label in labels {
+    if let Some(window) = app.get_webview_window(&label) {
+      let _ = window.destroy();
+    }
+  }
+}
+
+#[tauri::command]
+fn set_welcome_window(app: AppHandle, welcome: bool) {
+  let Some(window) = app.get_webview_window("main") else { return };
+  if welcome {
+    app.state::<PersistMainWindow>().0.store(false, Ordering::SeqCst);
+    place_welcome(&app, &window);
+  } else {
+    place_project(&app, &window);
+    app.state::<PersistMainWindow>().0.store(true, Ordering::SeqCst);
+    record_main_geometry(&app);
+  }
+}
+
+fn valid_folder_name(name: &str) -> bool {
+  let name = name.trim();
+  !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\\')
 }
 
 fn emit_geometry(app: &AppHandle, label: &str) {
@@ -138,6 +454,8 @@ pub fn run() {
     .plugin(tauri_plugin_dialog::init())
     .manage(PopoutQueue::default())
     .manage(MainGeometry::default())
+    .manage(PersistMainWindow(AtomicBool::new(false)))
+    .manage(LaunchMemory::default())
     .invoke_handler(tauri::generate_handler![
       log_line,
       queue_popout,
@@ -146,9 +464,29 @@ pub fn run() {
       focus_window,
       reset_main_window_state,
       write_text_file,
-      read_text_file
+      remove_file,
+      read_text_file,
+      write_base64_file,
+      read_base64_file,
+      project_db_exec,
+      project_db_query,
+      create_project_snapshot,
+      list_project_snapshots,
+      delete_project_snapshot,
+      documents_dir,
+      join_path,
+      ensure_dir,
+      path_exists,
+      list_child_dirs,
+      set_welcome_window,
+      session_set,
+      session_get,
+      set_close_project_label,
+      close_project_connections,
+      close_popout_windows
     ])
     .setup(move |app| {
+      install_app_menu(app.handle())?;
       let handle = app.handle().clone();
       let saved = geometry::load_main(app.handle());
       let mut main_builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -158,10 +496,15 @@ pub fn run() {
       match &saved {
         Some(s) => {
           let (r, moved) = geometry::fit_on_screen(app.handle(), s.rect);
-          println!("[RUST] main restore {:?} monitor={:?} -> {r:?}{}", s.rect, s.monitor, if moved { " (off-screen, moved to primary)" } else { "" });
-          main_builder = main_builder.inner_size(r.width, r.height).position(r.x, r.y);
+          println!("[RUST] project frame {:?} monitor={:?} -> {r:?}{}", s.rect, s.monitor, if moved { " (off-screen, moved to primary)" } else { "" });
         }
-        None => main_builder = main_builder.inner_size(1360.0, 820.0).center(),
+        None => {}
+      }
+      main_builder = main_builder.inner_size(WELCOME_W, WELCOME_H);
+      if let Some((x, y)) = welcome_origin(app.handle(), saved.as_ref()) {
+        main_builder = main_builder.position(x, y);
+      } else {
+        main_builder = main_builder.center();
       }
       let main = main_builder
         .disable_drag_drop_handler()
@@ -238,15 +581,7 @@ pub fn run() {
         });
       }
 
-      if let Some(s) = &saved {
-        if s.maximized {
-          let _ = main.maximize();
-        }
-      }
       main.show()?;
-      if saved.as_ref().is_some_and(|s| s.fullscreen) {
-        let _ = main.set_fullscreen(true);
-      }
       *app.state::<MainGeometry>().0.lock().unwrap() = saved;
 
       let h3 = app.handle().clone();
@@ -286,4 +621,27 @@ pub fn run() {
     })
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod documents_dir_tests {
+  use super::resolve_documents_dir;
+  use std::path::Path;
+
+  #[test]
+  fn keeps_the_system_documents_dir() {
+    let path = resolve_documents_dir(Some(Path::new("/home/keeper/Documents")), None).unwrap();
+    assert_eq!(path, Path::new("/home/keeper/Documents"));
+  }
+
+  #[test]
+  fn falls_back_to_home_documents_without_creating_it() {
+    let path = resolve_documents_dir(None, Some(Path::new("/home/keeper"))).unwrap();
+    assert_eq!(path, Path::new("/home/keeper/Documents"));
+  }
+
+  #[test]
+  fn errors_when_neither_dir_is_known() {
+    assert!(resolve_documents_dir(None, None).is_err());
+  }
 }

@@ -1,4 +1,5 @@
-import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { Component, useEffect, useState, type ReactNode } from "react";
 import {
   DockviewReact,
   themeAbyss,
@@ -13,19 +14,16 @@ import "dockview-react/dist/styles/dockview.css";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import {
   CommandIcon,
-  CopyIcon,
   FocusIcon,
   LockIcon,
   LockOpenIcon,
   Maximize2Icon,
   Minimize2Icon,
   MoonIcon,
-  MoreHorizontalIcon,
   PanelBottomIcon,
   PanelLeftIcon,
   PanelRightIcon,
   PictureInPicture2Icon,
-  PlusIcon,
   SquareArrowOutUpRightIcon,
   SunIcon,
   UndoDotIcon,
@@ -53,9 +51,14 @@ import { TOOL_MAP, TOOLS, UNKNOWN_ICON } from "./tools";
 import { allowedToolsStore, getLoadedTool, getToolError, isAllowed, loadedToolsStore, setAllowed } from "./tools/allowed";
 import { appLog, chromeStore, settingsStore, useStore } from "./lib/store";
 import { t, translate, useL, useT, type I18nKey } from "./lib/i18n";
+import { WelcomePage } from "./project/WelcomePage";
+import { ProjectSnapshots } from "./project/ProjectSnapshots";
+import { closeOpenProject } from "./project/closeProject";
+import { rememberSession } from "./project/launchSession";
+import { sessionStore } from "./project/sessionStore";
 
 const kw = (...keys: I18nKey[]) => keys.flatMap((k) => [translate("zh", k), translate("en", k)]).join(" ");
-import { openTextFile, saveTextFile, log } from "./lib/platform";
+import { openTextFile, saveTextFile, log, setWelcomeWindow, isTauri } from "./lib/platform";
 import {
   EDGES,
   activeController,
@@ -94,6 +97,7 @@ class PanelErrorBoundary extends Component<{ children: ReactNode }, { error?: Er
 function ToolPanel(props: IDockviewPanelProps<{ toolId: string }>) {
   const tr = useT();
   const l = useL();
+  const session = useStore(sessionStore);
   useStore(loadedToolsStore);
   useStore(allowedToolsStore);
   const toolId = props.params.toolId;
@@ -163,7 +167,7 @@ function ToolPanel(props: IDockviewPanelProps<{ toolId: string }>) {
 
   return (
     <PanelErrorBoundary>
-      <C panelId={toolId} />
+      <C panelId={toolId} projectPath={session?.projectPath ?? ""} modulePath={session?.modulePath ?? null} mode={session?.mode ?? "prep"} moduleEditable={session?.moduleEditable ?? false} />
     </PanelErrorBoundary>
   );
 }
@@ -311,7 +315,6 @@ function CommandPalette() {
   const tr = useT();
   const l = useL();
   const { paletteOpen, locked, focusMode } = useStore(chromeStore);
-  const ws = useStore(workspacesStore);
   useStore(allowedToolsStore);
   useStore(loadedToolsStore);
   const close = () => chromeStore.set((s) => ({ ...s, paletteOpen: false }));
@@ -346,15 +349,6 @@ function CommandPalette() {
                     </CommandItem>
                   );
                 })}
-              </CommandGroup>
-              <CommandGroup heading={tr("cmd.workspaces")}>
-                {ws.list.map((w, i) => (
-                  <CommandItem key={w.id} value={`workspace ${w.name}`} onSelect={() => run(() => workspacesStore.set((s) => ({ ...s, active: w.id })))}>
-                    <LayoutTemplateIcon />
-                    {w.name}
-                    <CommandShortcut>Ctrl+{i + 1}</CommandShortcut>
-                  </CommandItem>
-                ))}
               </CommandGroup>
               <CommandGroup heading={tr("cmd.commands")}>
                 <CommandItem value={`open all tools ${kw("cmd.openAll")}`} onSelect={() => run(() => ctrl?.openAll())}>{tr("cmd.openAll")}</CommandItem>
@@ -499,63 +493,35 @@ function applyPreset(snap: LayoutSnapshot, name: string) {
 
 function TopBar({ onTools, onSavePreset }: { onTools: () => void; onSavePreset: () => void }) {
   const tr = useT();
-  const ws = useStore(workspacesStore);
   const settings = useStore(settingsStore);
+  const session = useStore(sessionStore);
   const { locked } = useStore(chromeStore);
   const live = useStore(liveStore);
   const presets = useStore(presetsStore);
-  const [renaming, setRenaming] = useState<string | null>(null);
   const ctrl = activeController();
   const edgeIcons: Record<EdgePos, typeof PanelLeftIcon> = { left: PanelLeftIcon, bottom: PanelBottomIcon, right: PanelRightIcon };
   void live.tick;
   return (
     <header className="flex h-11 shrink-0 items-center gap-1 border-b border-border bg-card px-2 text-card-foreground">
-      <span className="mr-2 hidden shrink-0 whitespace-nowrap text-sm font-semibold xl:inline">{tr("app.title")}</span>
-      <nav className="flex min-w-0 items-center gap-1 overflow-x-auto">
-        {ws.list.map((w, i) => (
-          <div key={w.id} className={`group flex shrink-0 items-center rounded-md ${w.id === ws.active ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}>
-            {renaming === w.id ? (
-              <Input
-                autoFocus
-                defaultValue={w.name}
-                className="h-7 w-32"
-                onBlur={(e) => {
-                  const name = e.target.value || w.name;
-                  workspacesStore.set((s) => ({ ...s, list: s.list.map((x) => (x.id === w.id ? { ...x, name } : x)) }));
-                  setRenaming(null);
-                }}
-                onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-              />
-            ) : (
-              <button className="px-2.5 py-1 text-sm" title={`Ctrl+${i + 1}`} onClick={() => workspacesStore.set((s) => ({ ...s, active: w.id }))} onDoubleClick={() => setRenaming(w.id)}>
-                {w.name}
-              </button>
-            )}
-            {w.id === ws.active && (
-              <DropdownMenu>
-                <DropdownMenuTrigger className="rounded px-1 py-1 opacity-80 hover:opacity-100">
-                  <MoreHorizontalIcon className="size-3.5" />
-                </DropdownMenuTrigger>
-                <DropdownMenuContent className="w-52">
-                  <DropdownMenuItem onClick={() => setRenaming(w.id)}>{tr("ws.rename")}</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => duplicateWorkspace(w.id)}>
-                    <CopyIcon /> {tr("ws.dup")}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => { void getController(w.id).buildDefault().then(() => getController(w.id).saveNow()); }}>{tr("ws.reset")}</DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem variant="destructive" disabled={ws.list.length < 2} onClick={() => deleteWorkspace(w.id)}>
-                    {tr("ws.delete")}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-          </div>
-        ))}
-        <Button variant="ghost" size="icon-sm" title={tr("ws.new")} onClick={() => newWorkspace()}>
-          <PlusIcon />
-        </Button>
-      </nav>
+      <span data-app-mode={session?.mode ?? "prep"} className="mr-2 shrink-0 whitespace-nowrap text-sm font-semibold">
+        {session?.mode === "play" ? tr("app.title.play") : tr("app.title.prep")}
+      </span>
       <div className="flex-1" />
+      {session?.mode === "play" && (
+        <label className="mr-2 flex items-center gap-1.5 whitespace-nowrap text-xs">
+          <span>{tr("edit.scenario")}</span>
+          <Switch
+            size="sm"
+            checked={session.moduleEditable}
+            data-module-edit=""
+            onCheckedChange={(value) => {
+              const next = { ...session, moduleEditable: value };
+              sessionStore.set(next);
+              void rememberSession(next);
+            }}
+          />
+        </label>
+      )}
       <Button variant="outline" size="sm" className="gap-2 text-muted-foreground" onClick={() => openPalette(document)} data-open-palette>
         <CommandIcon className="size-3.5" />
         <span className="hidden md:inline">{tr("cmd.search")}</span>
@@ -602,7 +568,14 @@ function TopBar({ onTools, onSavePreset }: { onTools: () => void; onSavePreset: 
       <Button variant="ghost" size="icon-sm" title={tr("focus.off")} onClick={() => chromeStore.set((s) => ({ ...s, focusMode: true }))}>
         <FocusIcon />
       </Button>
+      <ProjectSnapshots />
       <div className="ml-1 flex items-center gap-1 border-l border-border pl-2">
+        <Button variant="outline" size="sm" data-temp-lang title={tr("settings.lang")} onClick={() => settingsStore.set((s) => ({ ...s, locale: s.locale === "zh" ? "en" : "zh" }))}>
+          {tr("settings.lang")}：{settings.locale === "zh" ? "中文" : "EN"}
+        </Button>
+        <Button variant="outline" size="sm" data-temp-theme title={tr("settings.theme")} onClick={() => settingsStore.set((s) => ({ ...s, theme: s.theme === "dark" ? "light" : "dark" }))}>
+          {tr("temp.background")}：{settings.theme === "dark" ? tr("settings.dark") : tr("settings.light")}
+        </Button>
         <Button variant="ghost" size="sm" onClick={() => settingsStore.set((s) => ({ ...s, locale: s.locale === "zh" ? "en" : "zh" }))} title={tr("settings.lang")} data-lang>
           {settings.locale === "zh" ? tr("settings.langZh") : tr("settings.langEn")}
         </Button>
@@ -625,12 +598,10 @@ function StatusBar() {
   const live = useStore(liveStore);
   const { locked } = useStore(chromeStore);
   const settings = useStore(settingsStore);
-  const ws = useStore(workspacesStore);
   const ctrl = activeController();
   const autoOn = EDGES.filter((p) => live.auto[p]);
   return (
     <footer className="flex h-7 shrink-0 items-center gap-4 overflow-hidden border-t border-border bg-card px-3 text-[0.72rem] whitespace-nowrap text-muted-foreground">
-      <span>{ws.list.find((w) => w.id === ws.active)?.name}</span>
       <span>{tr("status.width")}: {live.width}px</span>
       <span>
         {tr("status.autocollapse")}: {autoOn.length ? autoOn.map((p) => tr(`dock.${p}` as const)).join(" / ") : "—"}
@@ -654,40 +625,6 @@ async function resetDefaultLayout() {
   await new Promise((r) => setTimeout(r, 300));
   await c.buildDefault();
   c.saveNow();
-}
-
-function newWorkspace(copyFrom?: string) {
-  const id = `ws-${Date.now().toString(36)}`;
-  const base = copyFrom ? workspacesStore.get().list.find((w) => w.id === copyFrom)?.name : undefined;
-  if (copyFrom) {
-    const snap = getController(copyFrom).snapshot();
-    snap.data.popoutGroups = [];
-    snap.popoutGeometry = [];
-    localStorage.setItem(`ek.ws.${id}`, JSON.stringify(snap));
-  } else {
-    const empty = { kind: "ek.layoutSnapshot", layoutVersion: 1, adapter: { name: "dockview", version: "8.3.1" }, data: { grid: { root: { type: "branch", data: [] }, height: 0, width: 0, orientation: "HORIZONTAL" }, panels: {} }, panels: [], chrome: { collapsedDocks: [] }, popoutGeometry: [], savedAt: new Date().toISOString() };
-    localStorage.setItem(`ek.ws.${id}`, JSON.stringify(empty));
-  }
-  const name = base ? `${base} (copy)` : `${t("ws.new")} ${workspacesStore.get().list.length + 1}`;
-  workspacesStore.set((s) => ({ list: [...s.list, { id, name }], active: id }));
-  appLog(`＋ workspace ${name}`);
-}
-
-function duplicateWorkspace(id: string) {
-  newWorkspace(id);
-}
-
-async function deleteWorkspace(id: string) {
-  const c = controllers.get(id);
-  if (c?.api) {
-    for (const p of [...c.api.getPopouts()]) c.dockBack(p.group);
-  }
-  controllers.delete(id);
-  localStorage.removeItem(`ek.ws.${id}`);
-  workspacesStore.set((s) => {
-    const list = s.list.filter((w) => w.id !== id);
-    return { list, active: s.active === id ? list[0].id : s.active };
-  });
 }
 
 function applyDocSettings(doc: Document) {
@@ -724,12 +661,6 @@ function installKeys(doc: Document) {
     } else if (e.key === "F11" || (e.key === "Escape" && chromeStore.get().focusMode)) {
       e.preventDefault();
       chromeStore.set((s) => ({ ...s, focusMode: e.key === "F11" ? !s.focusMode : false }));
-    } else if (mod && /^[1-9]$/.test(e.key)) {
-      const w = workspacesStore.get().list[Number(e.key) - 1];
-      if (w) {
-        e.preventDefault();
-        workspacesStore.set((s) => ({ ...s, active: w.id }));
-      }
     }
   });
 }
@@ -753,21 +684,18 @@ function installGlobalHooks() {
 
 installGlobalHooks();
 
-export default function App() {
+function DesktopApp() {
   const ws = useStore(workspacesStore);
   const { focusMode } = useStore(chromeStore);
   const { theme } = useStore(settingsStore);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [presetOpen, setPresetOpen] = useState(false);
-  const ids = useMemo(() => ws.list.map((w) => w.id), [ws.list]);
   useEffect(() => bumpLive(), [ws.active]);
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
       {!focusMode && <TopBar onTools={() => setToolsOpen(true)} onSavePreset={() => setPresetOpen(true)} />}
       <main className="relative min-h-0 flex-1">
-        {ids.map((id) => (
-          <WorkspaceView key={id} id={id} visible={id === ws.active} />
-        ))}
+        <WorkspaceView key={ws.active} id={ws.active} visible />
         {focusMode && (
           <button className="absolute top-1 right-1 z-40 rounded-md bg-card/90 px-2 py-1 text-xs shadow ring-1 ring-border" onClick={() => chromeStore.set((s) => ({ ...s, focusMode: false }))}>
             {t("focus.on")} (Esc)
@@ -781,4 +709,42 @@ export default function App() {
       <Toaster theme={theme} position="bottom-right" richColors />
     </div>
   );
+}
+
+export default function App() {
+  const session = useStore(sessionStore);
+  const { theme, locale } = useStore(settingsStore);
+  const welcome = session == null;
+  useEffect(() => {
+    void setWelcomeWindow(welcome);
+  }, [welcome]);
+  useEffect(() => {
+    if (!isTauri) return;
+    void invoke("set_close_project_label", { text: t("file.closeProject") });
+  }, [locale]);
+  useEffect(() => {
+    if (!isTauri) return;
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    void import("@tauri-apps/api/event").then(async ({ listen }) => {
+      const unlisten = await listen("ek:close-project", () => {
+        void closeOpenProject();
+      });
+      if (cancelled) unlisten();
+      else stop = unlisten;
+    });
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, []);
+  if (!session) {
+    return (
+      <>
+        <WelcomePage />
+        <Toaster theme={theme} position="bottom-right" richColors />
+      </>
+    );
+  }
+  return <DesktopApp />;
 }
