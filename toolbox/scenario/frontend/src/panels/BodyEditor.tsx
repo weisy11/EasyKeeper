@@ -7,9 +7,13 @@ import Placeholder from "@tiptap/extension-placeholder";
 import { Color, FontFamily, TextStyle } from "@tiptap/extension-text-style";
 import { Highlight } from "@tiptap/extension-highlight";
 import { FindAndReplace } from "@tiptap/extension-find-and-replace";
-import { List as ListIcon, ListOrdered } from "lucide-react";
+import { Link2, List as ListIcon, ListOrdered } from "lucide-react";
 import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { scenarioT, type ScenarioStringKey } from "../i18n";
+import { readActorIndex, readArticles, subscribeActorIndex, subscribeArticles, type ActorIndexEntry } from "../articleStore";
+import type { ScenarioArticle, ScenarioTreeNode } from "../db";
+import { EntityLink, entityKind, entityLinkModifier, openEntityLink, type EntityKind } from "../entityLink";
+import { readSceneCatalog, subscribeSceneCatalog, type SceneCatalog } from "../sceneLinks";
+import { scenarioT, type ScenarioLocale, type ScenarioStringKey } from "../i18n";
 import { useScenarioLocale } from "../locale";
 import { ProjectPath } from "../projectPath";
 import { loadImageObjectUrl, readPage, savePastedImage, writePage } from "../storage";
@@ -99,6 +103,7 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
   editableRef.current = editable;
   const ready = useRef(false);
   const dirty = useRef(false);
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const editor = useEditor({
     editable,
     extensions: [
@@ -110,8 +115,26 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
       Color,
       Highlight.configure({ multicolor: true }),
       FindAndReplace.configure({ searchDebounceMs: 0 }),
+      EntityLink,
     ],
     editorProps: {
+      handleClick: (_view, _pos, event) => {
+        const target = event.target;
+        const node = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+        const link = node?.closest("[data-entity-id]");
+        const id = link?.getAttribute("data-entity-id") ?? "";
+        const kind = entityKind(link?.getAttribute("data-entity-kind") ?? null);
+        if (!link || !id || !kind) return false;
+        if (editableRef.current) {
+          if (!entityLinkModifier(event)) return false;
+          event.preventDefault();
+          openEntityLink({ kind, id, mode: "edit" });
+          return true;
+        }
+        event.preventDefault();
+        openEntityLink({ kind, id, mode: "read" });
+        return true;
+      },
       handlePaste: (_view, event) => {
         const current = editorRef.current;
         const root = projectRef.current;
@@ -129,6 +152,23 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
     content: EMPTY_DOC,
   });
   const [, setTick] = useState(0);
+
+  useEffect(() => {
+    const surface = surfaceRef.current;
+    if (!surface) return;
+    const sync = (event: KeyboardEvent) => {
+      surface.classList.toggle("entity-link-armed", entityLinkModifier(event));
+    };
+    const clear = () => surface.classList.remove("entity-link-armed");
+    window.addEventListener("keydown", sync);
+    window.addEventListener("keyup", sync);
+    window.addEventListener("blur", clear);
+    return () => {
+      window.removeEventListener("keydown", sync);
+      window.removeEventListener("keyup", sync);
+      window.removeEventListener("blur", clear);
+    };
+  }, []);
 
   useEffect(() => {
     editor?.setEditable(editable);
@@ -241,6 +281,7 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
         <ToolDivider />
         <ToolButton title={t("bullet")} onClick={() => editor?.chain().focus().toggleBulletList().run()} active={editor?.isActive("bulletList")}><ListIcon className="size-4" strokeWidth={1.75} /></ToolButton>
         <ToolButton title={t("ordered")} onClick={() => editor?.chain().focus().toggleOrderedList().run()} active={editor?.isActive("orderedList")}><ListOrdered className="size-4" strokeWidth={1.75} /></ToolButton>
+        <EntityLinkButton editor={editor} locale={locale} pageId={pageId} />
         <ToolDivider />
         <select
           data-font
@@ -291,11 +332,212 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
           <ToolButton title={t("replaceAll")} onClick={() => editor?.commands.replaceAll()}>{t("replaceAll")}</ToolButton>
         </div>
       )}
-      <div className="scenario-editor min-h-0 flex-1 overflow-auto">
+      <div ref={surfaceRef} className="scenario-editor min-h-0 flex-1 overflow-auto" data-entity-links={editable ? "edit" : "read"}>
         <EditorContent editor={editor} className="h-full [&_.ProseMirror]:h-full" />
       </div>
     </div>
   );
+}
+
+type LinkChoice = { id: string; kind: EntityKind; name: string; badge: string };
+
+function EntityLinkButton({ editor, locale, pageId }: { editor: Editor | null; locale: ScenarioLocale; pageId: string }) {
+  const t = (key: ScenarioStringKey) => scenarioT(locale, key);
+  const [open, setOpen] = useState(false);
+  const [category, setCategory] = useState<"scenes" | "npcs" | "clues" | null>(null);
+  const [actors, setActors] = useState<ActorIndexEntry[]>(readActorIndex);
+  const [articles, setArticles] = useState<ScenarioArticle[]>(readArticles);
+  const [catalog, setCatalog] = useState<SceneCatalog>(readSceneCatalog);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const active = editor?.isActive("entityLink") ?? false;
+
+  useEffect(() => subscribeActorIndex(setActors), []);
+  useEffect(() => subscribeArticles(setArticles), []);
+  useEffect(() => subscribeSceneCatalog(setCatalog), []);
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointer);
+    return () => document.removeEventListener("pointerdown", onPointer);
+  }, [open]);
+
+  function labelFor(kind: EntityKind, name: string) {
+    const trimmed = name.trim();
+    if (trimmed) return trimmed;
+    if (kind === "npc") return t("untitledNpc");
+    if (kind === "monster") return t("untitledMonster");
+    if (kind === "scene") return t("untitledScene");
+    if (kind === "event") return t("untitledEvent");
+    return kind === "clue" ? t("untitledClue") : t("untitledItem");
+  }
+
+  function badgeFor(kind: EntityKind) {
+    if (kind === "npc") return "NPC";
+    if (kind === "monster") return t("monster");
+    if (kind === "clue") return t("clue");
+    if (kind === "item") return t("item");
+    return kind === "scene" ? t("scenes") : t("event");
+  }
+
+  function apply(choice: LinkChoice) {
+    if (!editor) return;
+    const { empty } = editor.state.selection;
+    if (empty) {
+      const label = labelFor(choice.kind, choice.name);
+      editor.chain().focus().insertContent([
+        { type: "text", text: " " },
+        { type: "text", text: label, marks: [{ type: "entityLink", attrs: { kind: choice.kind, id: choice.id } }] },
+        { type: "text", text: " " },
+      ]).run();
+    } else {
+      editor.chain().focus().setMark("entityLink", { kind: choice.kind, id: choice.id }).run();
+    }
+    setCategory(null);
+    setOpen(false);
+  }
+
+  const people = actors.filter((actor) => !actor.trashed).map((actor) => ({
+    id: actor.id,
+    kind: actor.kind,
+    name: labelFor(actor.kind, actor.name),
+    badge: badgeFor(actor.kind),
+    linked: pageId !== "" && actor.links.includes(pageId),
+  }));
+  const clues = articles.filter((article) => !article.trashed).map((article) => ({
+    id: article.id,
+    kind: article.kind,
+    name: labelFor(article.kind, article.name),
+    badge: badgeFor(article.kind),
+    linked: pageId !== "" && article.scenes.includes(pageId),
+  }));
+  const sceneIds = relatedSceneIds(catalog.nodes, pageId);
+  const scenes = flattenScenes(catalog.nodes)
+    .filter((node) => node.id !== pageId)
+    .map((node) => ({
+      id: node.id,
+      kind: node.kind,
+      name: labelFor(node.kind, node.title),
+      badge: badgeFor(node.kind),
+      linked: sceneIds.has(node.id),
+    }));
+  for (const list of [people, clues]) list.sort((a, b) => labelFor(a.kind, a.name).localeCompare(labelFor(b.kind, b.name)));
+  const shown = category === "scenes" ? scenes : category === "npcs" ? people : category === "clues" ? clues : [];
+  const linkedRows = shown.filter((row) => row.linked);
+  const otherRows = shown.filter((row) => !row.linked);
+
+  return (
+    <div ref={rootRef} className="relative">
+      <ToolButton title={t("entityLink")} active={open || category !== null || active} onClick={() => setOpen((value) => !value)}>
+        <Link2 className="size-4" strokeWidth={1.75} />
+      </ToolButton>
+      {open && (
+        <div data-entity-picker className="absolute top-8 left-0 z-20 w-40 rounded-md border border-border bg-popover py-1 text-[13px] text-popover-foreground shadow-md">
+          {active && (
+            <button
+              type="button"
+              className="block w-full px-3 py-1.5 text-left hover:bg-muted"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                editor?.chain().focus().unsetMark("entityLink").run();
+                setOpen(false);
+              }}
+            >
+              {t("entityLinkRemove")}
+            </button>
+          )}
+          {(["scenes", "npcs", "clues"] as const).map((key) => (
+            <button
+              key={key}
+              type="button"
+              data-entity-category={key}
+              className="block w-full px-3 py-1.5 text-left hover:bg-muted"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                setCategory(key);
+                setOpen(false);
+              }}
+            >
+              {t(key)}
+            </button>
+          ))}
+        </div>
+      )}
+      {category && (
+        <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-6" onPointerDown={() => setCategory(null)}>
+          <div
+            role="dialog"
+            data-entity-form={category}
+            aria-label={t(category)}
+            className="flex max-h-full w-[min(440px,100%)] flex-col gap-3 overflow-hidden rounded-md border border-border bg-background p-4 text-[13px] shadow-lg"
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <h2 className="text-sm font-semibold">{t(category)}</h2>
+            <LinkPanel title={t("linkedHere")} rows={linkedRows} onPick={apply} />
+            <LinkPanel title={t("otherItems")} rows={otherRows} onPick={apply} />
+            <div className="flex justify-end">
+              <button type="button" className="rounded-md px-3 py-1 hover:bg-muted" onClick={() => setCategory(null)}>{t("cancel")}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LinkPanel({ title, rows, onPick }: { title: string; rows: LinkChoice[]; onPick: (row: LinkChoice) => void }) {
+  return (
+    <section className="flex min-h-0 flex-col">
+      <h3 className="mb-1 text-xs text-muted-foreground">{title}</h3>
+      <div className="max-h-40 overflow-auto">
+        {rows.length === 0 ? <p className="text-muted-foreground">—</p> : (
+          <div className="flex flex-wrap gap-1.5">
+            {rows.map((row) => (
+              <button
+                key={row.id}
+                type="button"
+                data-entity-target={row.id}
+                title={row.badge}
+                className="shrink-0 rounded-md border border-border px-2 py-0.5 hover:bg-muted"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => onPick(row)}
+              >
+                {row.name}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function flattenScenes(nodes: ScenarioTreeNode[]): ScenarioTreeNode[] {
+  const rows: ScenarioTreeNode[] = [];
+  for (const node of nodes) {
+    rows.push(node);
+    rows.push(...flattenScenes(node.children));
+  }
+  return rows;
+}
+
+function relatedSceneIds(nodes: ScenarioTreeNode[], selectedId: string) {
+  const ids = new Set<string>();
+  function walk(list: ScenarioTreeNode[], parent: ScenarioTreeNode | null): boolean {
+    for (const node of list) {
+      if (node.id === selectedId) {
+        if (parent) ids.add(parent.id);
+        for (const child of node.children) ids.add(child.id);
+        return true;
+      }
+      if (walk(node.children, node)) return true;
+    }
+    return false;
+  }
+  walk(nodes, null);
+  ids.delete(selectedId);
+  return ids;
 }
 
 function ColorMenu({ editor, label, textLabel, highlightLabel, defaultLabel }: { editor: Editor | null; label: string; textLabel: string; highlightLabel: string; defaultLabel: string }) {

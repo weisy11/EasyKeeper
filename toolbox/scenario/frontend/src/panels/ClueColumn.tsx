@@ -12,6 +12,7 @@ import {
   updateScenarioArticle,
   type ScenarioArticle,
 } from "../db";
+import { onOpenEntity } from "../entityLink";
 import { scenarioT, type ScenarioLocale, type ScenarioStringKey } from "../i18n";
 import { discoverArticle, loadFoundArticles, resetArticle } from "../play/recordDb";
 import { presentSceneIds, readSceneCatalog, sceneLinkRows, subscribeSceneCatalog, type SceneCatalog } from "../sceneLinks";
@@ -49,6 +50,21 @@ export function ClueColumn({
   useEffect(() => {
     if (editable) setSheet(null);
   }, [editable]);
+
+  useEffect(() => onOpenEntity((detail) => {
+    if (detail.kind !== "clue" && detail.kind !== "item") return;
+    const article = articles.find((item) => item.id === detail.id);
+    if (!article) return;
+    setPicked(article.id);
+    if (detail.mode === "read" && !editable) {
+      setSheet(article);
+      return;
+    }
+    if (detail.mode === "edit" && editable) {
+      setSheet(null);
+      setDraft({ kind: article.kind, article });
+    }
+  }), [articles, editable]);
 
   useEffect(() => {
     if (!recordPath || !projectDatabaseAvailable()) return;

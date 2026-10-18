@@ -45,6 +45,21 @@
   height: auto;
 }
 
+.scenario-editor .ProseMirror .entity-link {
+  color: #2563eb;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.dark .scenario-editor .ProseMirror .entity-link {
+  color: #60a5fa;
+}
+
+.scenario-editor[data-entity-links="read"] .ProseMirror .entity-link,
+.scenario-editor.entity-link-armed .ProseMirror .entity-link {
+  cursor: pointer;
+}
+
 .scenario-editor .ProseMirror p.is-editor-empty:first-child::before {
   color: var(--muted-foreground);
   content: attr(data-placeholder);

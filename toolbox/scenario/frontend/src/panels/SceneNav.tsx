@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
 import { readArticles, subscribeArticles } from "../articleStore";
 import { createScenarioNode, deleteScenarioNode, duplicateScenarioNode, loadNodeLocks, loadScenarioForest, placeScenarioNodes, projectDatabaseAvailable, renameScenarioNode, setNodeLocks, TRASH_ID, type ScenarioArticle, type ScenarioTreeNode } from "../db";
 import { publishSceneCatalog } from "../sceneLinks";
+import { onOpenEntity } from "../entityLink";
 import { scenarioT, type ScenarioLocale, type ScenarioStringKey } from "../i18n";
 import { appendBlockToTrash, moveBlock, siblingRange, type Place } from "./navMove";
 
@@ -234,6 +235,19 @@ export function SceneNav({
   }, [nodes, trash, locale]);
 
   useEffect(() => subscribeArticles(setArticles), []);
+
+  useEffect(() => onOpenEntity((detail) => {
+    if (detail.kind !== "scene" && detail.kind !== "event") return;
+    if (!forestSpot(nodes, trash, detail.id)) return;
+    const open: string[] = [];
+    let parent = forestSpot(nodes, trash, detail.id)?.parentId ?? null;
+    while (parent && parent !== TRASH_ID) {
+      open.push(parent);
+      parent = forestSpot(nodes, trash, parent)?.parentId ?? null;
+    }
+    if (open.length > 0) setOpenIds((current) => [...new Set([...current, ...open])]);
+    onSelect(detail.id);
+  }), [nodes, trash, onSelect]);
 
   useEffect(() => {
     if (!usingDb) return;

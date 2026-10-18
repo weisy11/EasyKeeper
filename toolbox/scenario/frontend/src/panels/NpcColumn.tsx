@@ -15,6 +15,7 @@ import {
   type ScenarioActor,
   type ScenarioArticle,
 } from "../db";
+import { onOpenEntity } from "../entityLink";
 import { scenarioT, type ScenarioLocale, type ScenarioStringKey } from "../i18n";
 import { ListTrash } from "./ListTrash";
 import { deleteRecordActor, ensureRecordSchema, insertRecordMonster, loadRecordActors, loadRecordMonsters, saveRecordActor, saveRecordMonster, type RecordActorVitals, type RecordMonster } from "../play/recordDb";
@@ -88,7 +89,7 @@ export function NpcColumn({
   }, [projectPath, usingDb]);
 
   useEffect(() => {
-    publishActorIndex(actors.map((actor) => ({ id: actor.id, name: actor.name, kind: actor.kind, trashed: actor.trashed })));
+    publishActorIndex(actors.map((actor) => ({ id: actor.id, name: actor.name, kind: actor.kind, trashed: actor.trashed, links: actor.links })));
   }, [actors]);
 
   useEffect(() => {
@@ -125,6 +126,23 @@ export function NpcColumn({
       setMonsterId(null);
     }
   }, [editable]);
+
+  useEffect(() => onOpenEntity((detail) => {
+    if (detail.kind !== "npc" && detail.kind !== "monster") return;
+    const actor = actors.find((item) => item.id === detail.id);
+    if (!actor) return;
+    setPicked(actor.id);
+    if (detail.mode === "read" && !editable) {
+      setMonsterId(null);
+      setSheet(actor);
+      return;
+    }
+    if (detail.mode === "edit" && editable) {
+      setSheet(null);
+      setMonsterId(null);
+      setDraft({ kind: actor.kind, actor });
+    }
+  }), [actors, editable]);
 
   useEffect(() => {
     if (!menu && !rowMenu) return;

@@ -4,6 +4,9 @@ export type ScenarioLocale = "zh" | "en";
 
 const strings = {
   scenes: { zh: "场景", en: "Scenes" },
+  event: { zh: "事件", en: "Event" },
+  linkedHere: { zh: "与当前场景关联", en: "Linked to this scene" },
+  otherItems: { zh: "其他项目", en: "Other items" },
   body: { zh: "描述、原文", en: "Description" },
   npcs: { zh: "NPC 和怪物", en: "NPCs and monsters" },
   clues: { zh: "线索和物品", en: "Clues and items" },
@@ -34,6 +37,9 @@ const strings = {
   textColor: { zh: "文字颜色", en: "Text color" },
   highlight: { zh: "背景颜色", en: "Highlight color" },
   findReplace: { zh: "查找替换", en: "Find and replace" },
+  entityLink: { zh: "链接", en: "Link" },
+  entityLinkRemove: { zh: "取消链接", en: "Remove link" },
+  entityLinkEmpty: { zh: "还没有可以链接的项目", en: "Nothing to link yet" },
   find: { zh: "查找", en: "Find" },
   replaceWith: { zh: "替换为", en: "Replace with" },
   replace: { zh: "替换", en: "Replace" },

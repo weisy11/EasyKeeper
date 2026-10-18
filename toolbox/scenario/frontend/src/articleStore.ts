@@ -1,6 +1,6 @@
 import type { ScenarioArticle } from "./db";
 
-export type ActorIndexEntry = { id: string; name: string; kind: "npc" | "monster"; trashed: boolean };
+export type ActorIndexEntry = { id: string; name: string; kind: "npc" | "monster"; trashed: boolean; links: string[] };
 
 let articles: ScenarioArticle[] = [];
 let actors: ActorIndexEntry[] = [];
