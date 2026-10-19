@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
+    "@ek-tool/character": "workspace:*",
     "@ek-tool/dice": "workspace:*",
     "@ek-tool/scenario": "workspace:*",
     "@ek/tool-api": "workspace:*",

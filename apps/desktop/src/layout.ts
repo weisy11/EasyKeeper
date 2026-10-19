@@ -4,11 +4,15 @@ import { CATALOG_MAP, TOOL_MAP, TOOLS, type Region } from "./tools";
 import { getLoadedTool, isAllowed } from "./tools/allowed";
 import { closeTool, ensureToolsLoaded, openTools } from "./tools/loader";
 import { appLog, chromeStore, createStore, settingsStore } from "./lib/store";
+import { sessionStore } from "./project/sessionStore";
 import { t } from "./lib/i18n";
 import { clearPopoutQueue, destroyWindow, focusWindow, log, on, queuePopout, type Box } from "./lib/platform";
 
 export type EdgePos = "left" | "right" | "bottom";
 export const EDGES: EdgePos[] = ["left", "right", "bottom"];
+
+/** Holds the empty lower half of the play-mode side column. Not a tool. */
+export const PLAY_BLANK = "play-blank";
 
 export type LayoutSnapshot = {
   kind: "ek.layoutSnapshot";
@@ -164,6 +168,54 @@ export class WorkspaceController {
     await openTools(["ek.scenario"], this.panelCtx());
     this.applyAutoCollapse(liveStore.get().auto);
     bumpLive();
+  }
+
+  /** Play mode: scenario on the left two thirds, character tool on the upper right third. */
+  async buildPlay() {
+    const api = this.api;
+    this.restoring = true;
+    for (const p of [...api.panels]) {
+      const toolId = String((p.params as { toolId?: string } | undefined)?.toolId ?? p.id);
+      await closeTool(toolId);
+    }
+    api.clear();
+    for (const pos of EDGES) {
+      if (api.getEdgeGroup(pos)) api.removeEdgeGroup(pos);
+    }
+    this.userCollapsed = { left: false, right: false, bottom: false };
+    this.restoring = false;
+    await ensureToolsLoaded(["ek.scenario", "ek.character"]);
+    const scenario = this.openPanel("ek.scenario", { focus: true });
+    const character = this.openBeside(scenario, "ek.character", "right");
+    const blank = api.addPanel({
+      id: PLAY_BLANK,
+      component: "blank",
+      title: "",
+      params: { blank: true },
+      position: { referencePanel: character, direction: "below" },
+    });
+    blank.group.header.hidden = true;
+    const width = api.width || window.innerWidth;
+    const height = api.height || window.innerHeight;
+    character.group.api.setSize({ width: Math.max(280, Math.round(width / 3)) });
+    character.group.api.setSize({ height: Math.max(160, Math.round(height / 2)) });
+    this.applyAutoCollapse(liveStore.get().auto);
+    bumpLive();
+  }
+
+  private openBeside(reference: IDockviewPanel, toolId: string, direction: "right" | "below") {
+    const loaded = getLoadedTool(toolId);
+    const catalog = CATALOG_MAP[toolId] ?? TOOL_MAP[toolId];
+    const titleSrc = loaded?.title ?? catalog?.title;
+    return this.api.addPanel({
+      id: toolId,
+      component: "tool",
+      title: titleSrc ? titleSrc[settingsStore.get().locale] : toolId,
+      params: { toolId },
+      minimumWidth: 240,
+      minimumHeight: 160,
+      position: { referencePanel: reference, direction },
+    });
   }
 
   panelCtx() {
@@ -403,7 +455,7 @@ export class WorkspaceController {
       const label = this.labelByWindow.get(p.window);
       if (label) this.destroying.add(label);
     }
-    const toolIds = snap.panels.map((p) => p.panel);
+    const toolIds = snap.panels.map((p) => p.panel).filter((id) => id !== PLAY_BLANK && !!CATALOG_MAP[id]);
     await ensureToolsLoaded(toolIds);
     const expected = snap.data.popoutGroups?.length ?? 0;
     for (let i = 0; i < expected; i++) {
@@ -452,16 +504,20 @@ export class WorkspaceController {
 
   saveNow() {
     if (!this.api) return;
-    localStorage.setItem(`ek.ws.${this.id}`, JSON.stringify(this.snapshot()));
+    localStorage.setItem(this.layoutStorageKey(), JSON.stringify(this.snapshot()));
   }
 
   loadSaved(): LayoutSnapshot | null {
     try {
-      const raw = localStorage.getItem(`ek.ws.${this.id}`);
+      const raw = localStorage.getItem(this.layoutStorageKey());
       return raw ? (JSON.parse(raw) as LayoutSnapshot) : null;
     } catch {
       return null;
     }
+  }
+
+  private layoutStorageKey() {
+    return sessionStore.get()?.mode === "play" ? `ek.ws.${this.id}.play` : `ek.ws.${this.id}`;
   }
 
   setLocked(locked: boolean) {
@@ -546,7 +602,7 @@ export function makePresetFile(items: { name: string; snapshot: LayoutSnapshot }
 }
 
 export function missingTools(snap: LayoutSnapshot) {
-  return snap.panels.map((p) => p.panel).filter((id) => !CATALOG_MAP[id] || !isAllowed(id));
+  return snap.panels.map((p) => p.panel).filter((id) => id !== PLAY_BLANK && (!CATALOG_MAP[id] || !isAllowed(id)));
 }
 
 export { t };
