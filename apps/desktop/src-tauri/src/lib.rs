@@ -181,6 +181,45 @@ fn resolve_documents_dir(document: Option<&Path>, home: Option<&Path>) -> Result
 }
 
 #[tauri::command]
+fn pick_export_folder(app: AppHandle) -> Result<Option<String>, String> {
+  let (tx, rx) = std::sync::mpsc::channel();
+  app
+    .run_on_main_thread(move || {
+      let _ = tx.send(show_export_folder_panel());
+    })
+    .map_err(|err| err.to_string())?;
+  rx.recv().map_err(|err| err.to_string())?
+}
+
+#[cfg(target_os = "macos")]
+fn show_export_folder_panel() -> Result<Option<String>, String> {
+  use objc2::MainThreadMarker;
+  use objc2_app_kit::NSOpenPanel;
+  use objc2_foundation::NSString;
+  let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
+  let panel = NSOpenPanel::openPanel(mtm);
+  panel.setCanChooseDirectories(true);
+  panel.setCanChooseFiles(false);
+  panel.setCanCreateDirectories(true);
+  panel.setPrompt(Some(&NSString::from_str("Save")));
+  if panel.runModal() != 1 {
+    return Ok(None);
+  }
+  let Some(url) = panel.URL() else {
+    return Ok(None);
+  };
+  let Some(path) = url.path() else {
+    return Ok(None);
+  };
+  Ok(Some(path.to_string()))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn show_export_folder_panel() -> Result<Option<String>, String> {
+  Err("pick_export_folder is only customized on macOS".into())
+}
+
+#[tauri::command]
 fn documents_dir(app: AppHandle) -> Result<String, String> {
   let document = app.path().document_dir().ok();
   let home = app.path().home_dir().ok();
@@ -474,6 +513,7 @@ pub fn run() {
       list_project_snapshots,
       delete_project_snapshot,
       documents_dir,
+      pick_export_folder,
       join_path,
       ensure_dir,
       path_exists,

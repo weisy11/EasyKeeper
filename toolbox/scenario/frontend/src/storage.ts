@@ -184,6 +184,41 @@ export async function writePage(projectPath: string, pageId: string, doc: JSONCo
   await writeText(await joinPath(dir, `${pageId}.json`), JSON.stringify(doc));
 }
 
+/** Read a project image as base64, without the data-URL prefix. */
+export async function readProjectImageBase64(projectPath: string, src: string): Promise<string | null> {
+  const match = IMAGE_SRC.exec(src);
+  const filename = match?.[1];
+  if (!projectPath || !filename || filename === "." || filename === "..") return null;
+  const path = await joinPath(await joinPath(projectPath, "images"), filename);
+  if (isTauri()) {
+    try {
+      return await invoke<string>("read_base64_file", { path });
+    } catch {
+      return null;
+    }
+  }
+  const value = browserFs().files[path];
+  const encoded = typeof value === "string" ? /^data:[^;,]*;base64,(.*)$/.exec(value) : null;
+  return encoded?.[1] ?? null;
+}
+
+/** Write base64 image bytes into `{project}/images` and return the project-relative path. */
+export async function writeProjectImageBase64(projectPath: string, contents: string, ext: string): Promise<string> {
+  const safeExt = /^[a-z0-9]+$/.test(ext) ? ext : "png";
+  const filename = `${crypto.randomUUID()}.${safeExt}`;
+  const dir = await joinPath(projectPath, "images");
+  await ensureDir(dir);
+  const path = await joinPath(dir, filename);
+  if (isTauri()) {
+    await invoke("write_base64_file", { path, contents });
+  } else {
+    const fs = browserFs();
+    fs.files[path] = `data:${MIME_BY_EXT[safeExt] ?? "application/octet-stream"};base64,${contents}`;
+    saveBrowserFs(fs);
+  }
+  return `images/${filename}`;
+}
+
 /** Load a project image for display. The returned blob URL must be revoked by the caller. */
 export async function loadImageObjectUrl(projectPath: string, src: string): Promise<string | null> {
   const match = IMAGE_SRC.exec(src);

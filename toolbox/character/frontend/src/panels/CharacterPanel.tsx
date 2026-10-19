@@ -15,6 +15,7 @@ import {
 } from "../db";
 import { characterT, type CharacterLocale, type CharacterStringKey } from "../i18n";
 import { useCharacterLocale } from "../locale";
+import { createTimestampedFolder, pickExportFolder, pickFolder, readInvestigatorFolder, writeInvestigatorFolder } from "../transfer";
 
 const STATS = ["str", "con", "siz", "dex", "app", "edu", "int", "pow"] as const;
 const POOLS = ["hp", "mp", "luck", "san", "sanStart"] as const;
@@ -28,6 +29,8 @@ export function CharacterPanel({ projectPath }: ToolPanelProps) {
   const [mode, setMode] = useState<"compact" | "edit" | "brief">("edit");
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [addMenu, setAddMenu] = useState<{ x: number; y: number } | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
   const [creatingId, setCreatingId] = useState<string | null>(null);
   const ready = useRef(false);
   const timers = useRef<Record<string, number>>({});
@@ -140,6 +143,33 @@ export function CharacterPanel({ projectPath }: ToolPanelProps) {
     enqueue(id, () => deleteInvestigator(projectPath, id));
   }
 
+  function openExport() {
+    setAddMenu(null);
+    setPicked([]);
+    setExporting(true);
+  }
+
+  async function confirmExport() {
+    const chosen = people.filter((person) => picked.includes(person.id));
+    setExporting(false);
+    if (chosen.length === 0 || !projectPath) return;
+    const parent = await pickExportFolder();
+    if (!parent) return;
+    const folder = await createTimestampedFolder(parent, "investigators");
+    await writeInvestigatorFolder(folder, projectPath, chosen).catch((error: unknown) => console.error(error));
+  }
+
+  async function importFile() {
+    if (!projectPath) return;
+    const path = await pickFolder();
+    if (!path) return;
+    const rows = await readInvestigatorFolder(path, projectPath);
+    if (!rows || rows.length === 0) return;
+    const imported = rows.map((row, index) => ({ ...row, id: crypto.randomUUID(), position: people.length + index }));
+    setPeople((current) => [...current, ...imported]);
+    for (const row of imported) scheduleSave(row);
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-[13px] text-foreground">
       <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2 text-xs font-semibold">
@@ -190,6 +220,16 @@ export function CharacterPanel({ projectPath }: ToolPanelProps) {
           <button type="button" className="block w-full px-3 py-1 text-left hover:bg-muted" onClick={() => { setAddMenu(null); add("brief"); }}>
             {t("addInvestigatorBrief")}
           </button>
+          <button
+            type="button"
+            className="block w-full px-3 py-1 text-left hover:bg-muted"
+            onClick={openExport}
+          >
+            {t("exportInvestigators")}
+          </button>
+          <button type="button" className="block w-full px-3 py-1 text-left hover:bg-muted" onClick={() => { setAddMenu(null); void importFile(); }}>
+            {t("importInvestigators")}
+          </button>
         </div>
       )}
       {menu && (
@@ -229,6 +269,46 @@ export function CharacterPanel({ projectPath }: ToolPanelProps) {
           >
             {t("deleteInvestigator")}
           </button>
+        </div>
+      )}
+      {exporting && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-6" onPointerDown={() => setExporting(false)}>
+          <div
+            role="dialog"
+            aria-label={t("exportInvestigators")}
+            data-investigator-export=""
+            className="flex max-h-full w-[min(360px,100%)] flex-col rounded-md border border-border bg-background shadow-lg"
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <h2 className="border-b border-border px-3 py-2 text-sm font-semibold">{t("exportInvestigators")}</h2>
+            <div className="min-h-0 flex-1 overflow-auto py-1">
+              {people.length === 0 ? <p className="px-3 py-2 text-muted-foreground">{t("exportEmpty")}</p> : people.map((person) => (
+                <label key={person.id} className="flex h-7 cursor-default items-center gap-2 px-3 hover:bg-muted">
+                  <input
+                    type="checkbox"
+                    checked={picked.includes(person.id)}
+                    onChange={(event) => {
+                      setPicked((current) => event.target.checked ? [...current, person.id] : current.filter((id) => id !== person.id));
+                    }}
+                  />
+                  <span className="min-w-0 flex-1 truncate">{person.name.trim() || t("untitled")}</span>
+                </label>
+              ))}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-border px-3 py-2">
+              <button type="button" className="rounded-md px-3 py-1 hover:bg-muted" onClick={() => setExporting(false)}>
+                {t("cancel")}
+              </button>
+              <button
+                type="button"
+                disabled={picked.length === 0}
+                className="rounded-md bg-primary px-3 py-1 text-primary-foreground disabled:opacity-50"
+                onClick={() => void confirmExport()}
+              >
+                {t("exportAction")}
+              </button>
+            </div>
+          </div>
         </div>
       )}
       {current && mode === "compact" && (
