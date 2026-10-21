@@ -121,6 +121,7 @@ const dict = {
     en: "The selected folder is not a valid game record. It may be a scenario.",
   },
   "welcome.error.missingParent": { zh: "位置不存在", en: "Location does not exist." },
+  "welcome.error.missingDir": { zh: "目录不存在", en: "The folder does not exist." },
   "welcome.error.generic": { zh: "无法完成：{message}", en: "Could not finish: {message}" },
 } as const;
 

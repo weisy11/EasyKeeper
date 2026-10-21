@@ -67,6 +67,7 @@ import {
   autoCollapseFor,
   bumpLive,
   controllers,
+  consumePrepDefaultLayout,
   getController,
   liveStore,
   makePresetFile,
@@ -282,20 +283,22 @@ function WorkspaceView({ id, visible }: { id: string; visible: boolean }) {
   const onReady = async (e: DockviewReadyEvent) => {
     const ctrl = getController(id);
     ctrl.attach(e.api);
-    const saved = ctrl.loadSaved();
+    const freshPrep = consumePrepDefaultLayout() && sessionStore.get()?.mode === "prep";
+    const saved = freshPrep ? null : ctrl.loadSaved();
     if (saved) {
       const missing = missingTools(saved);
       await ctrl.restore(saved);
       if (missing.length) appLog(`⚠ ${id}: layout references unknown tools: ${missing.join(", ")}`);
       appLog(`↻ ${id}: layout restored from autosave (${saved.savedAt})`);
+      if (sessionStore.get()?.mode === "prep") await ctrl.placePrepCopilot();
     } else if (sessionStore.get()?.mode === "play") {
       await ctrl.buildPlay();
       appLog(`★ ${id}: play layout`);
     } else {
       await ctrl.buildDefault();
+      if (freshPrep && ctrl.panelFor("ek.scenario")) ctrl.saveNow();
       appLog(`★ ${id}: built-in default layout`);
     }
-    if (sessionStore.get()?.mode === "prep") await ctrl.placePrepCopilot();
     ctrl.applyAutoCollapse(liveStore.get().auto);
     ctrl.setLocked(chromeStore.get().locked);
     bumpLive();

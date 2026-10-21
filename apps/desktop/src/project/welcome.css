@@ -84,13 +84,19 @@
 }
 
 .ek-welcome .block + .block {
-  margin-top: 52px;
+  margin-top: 20px;
 }
 
 .ek-welcome ul {
   list-style: none;
   margin: 0;
   padding: 0;
+}
+
+.ek-welcome .recent-list {
+  /* One recent row is 55px. Keep three visible; the rest scroll. */
+  max-height: 165px;
+  overflow-y: auto;
 }
 
 .ek-welcome .recent {
@@ -105,7 +111,7 @@
   border: 0;
   background: transparent;
   color: inherit;
-  padding: 14px 2px 13px;
+  padding: 6px 2px;
   border-radius: 2px;
   display: block;
 }
@@ -113,7 +119,7 @@
 .ek-welcome .remove {
   flex: none;
   width: 28px;
-  margin: 8px 0;
+  margin: 4px 0;
   border: 0;
   border-radius: 2px;
   background: transparent;

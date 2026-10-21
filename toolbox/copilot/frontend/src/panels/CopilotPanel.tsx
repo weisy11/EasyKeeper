@@ -461,6 +461,22 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
     setDraft(root.innerText.replace(/\u00a0/g, " "));
   }
 
+  /** WebKit keeps painting contenteditable=false chips after innerHTML is cleared. */
+  function clearComposer() {
+    const root = composerRef.current;
+    setDraft("");
+    setMentionQuery(null);
+    if (!root) return;
+    const focused = document.activeElement === root;
+    root.contentEditable = "false";
+    root.replaceChildren();
+    root.contentEditable = "true";
+    if (focused) {
+      root.focus();
+      keepCaretTarget();
+    }
+  }
+
   function send() {
     touchedRef.current = true;
     const text = composerText();
@@ -472,9 +488,7 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
     const user: Message = { id: userId, role: "user", text };
     const history = [...messages, user];
     setMessages(history);
-    setDraft("");
-    setMentionQuery(null);
-    if (composerRef.current) composerRef.current.innerHTML = "";
+    clearComposer();
     if (!selection) {
       setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: t("pickModel") }]);
       return;
@@ -641,7 +655,7 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
         }}
       >
         <div className="flex flex-col gap-1 rounded-2xl border border-border bg-card px-3 py-2">
-          <div className="relative min-w-0 overflow-hidden">
+          <div className="relative min-w-0">
             {draft.trim() === "" && !composerFocused ? <span className="pointer-events-none absolute top-1 left-0 text-muted-foreground">{t("placeholder")}</span> : null}
             <div
               ref={composerRef}

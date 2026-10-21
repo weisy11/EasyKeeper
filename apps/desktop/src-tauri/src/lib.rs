@@ -48,7 +48,7 @@ struct MainGeometry(Mutex<Option<MainWindowState>>);
 struct PersistMainWindow(AtomicBool);
 
 const WELCOME_W: f64 = 860.0;
-const WELCOME_H: f64 = 564.0;
+const WELCOME_H: f64 = 564.0 * 1.05;
 
 #[derive(Clone, Serialize)]
 struct PopoutCreated {

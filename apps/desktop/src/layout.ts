@@ -78,6 +78,19 @@ const EDGE_OPTS: Record<EdgePos, { initialSize: number; minimumSize: number }> =
 const pendingLabels = new Map<string, string[]>();
 const labelOwner = new Map<string, WorkspaceController>();
 
+/** Create-scenario asks for the built-in prep layout instead of the last autosave. */
+let pendingPrepDefault = false;
+
+export function usePrepDefaultOnNextLayout() {
+  pendingPrepDefault = true;
+}
+
+export function consumePrepDefaultLayout() {
+  const pending = pendingPrepDefault;
+  pendingPrepDefault = false;
+  return pending;
+}
+
 export class WorkspaceController {
   api!: DockviewApi;
   readonly id: string;
@@ -179,9 +192,26 @@ export class WorkspaceController {
     if (!scenario) return;
     let copilot = this.panelFor("ek.copilot");
     if (!copilot) copilot = this.openBeside(scenario, "ek.copilot", "right", { inactive: true });
-    const width = this.api.width || window.innerWidth;
+    const width = await this.prepWidth();
     copilot.group.api.setSize({ width: Math.max(280, Math.round(width / 3)) });
     scenario.api.setActive();
+  }
+
+  /** Welcome is 860px wide. Wait until the project window has opened before splitting. */
+  private prepWidth(): Promise<number> {
+    const read = () => this.api.width || window.innerWidth;
+    if (read() >= 1000) return Promise.resolve(read());
+    return new Promise((resolve) => {
+      const finish = () => {
+        window.removeEventListener("resize", onResize);
+        resolve(read());
+      };
+      const onResize = () => {
+        if (read() >= 1000) finish();
+      };
+      window.addEventListener("resize", onResize);
+      window.setTimeout(finish, 600);
+    });
   }
 
   /** Play mode: scenario on the left two thirds, character tool on the upper right third. */
