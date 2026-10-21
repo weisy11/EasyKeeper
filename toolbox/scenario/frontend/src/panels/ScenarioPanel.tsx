@@ -2,6 +2,7 @@ import type { ToolPanelProps } from "@ek/tool-api";
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { scenarioT, type ScenarioStringKey } from "../i18n";
 import { useScenarioLocale } from "../locale";
+import { clearCurrentScene, publishCurrentScene } from "../moduleData";
 import { ProjectPath } from "../projectPath";
 import { BodyEditor } from "./BodyEditor";
 import { ClueColumn } from "./ClueColumn";
@@ -30,36 +31,49 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
   const frameRef = useRef<HTMLDivElement>(null);
   const leftRef = useRef<HTMLDivElement>(null);
   const rightRef = useRef<HTMLDivElement>(null);
-  const widths = useRef({ left: LEFT_WIDTH, right: RIGHT_WIDTH });
-  widths.current = { left: leftWidth, right: rightWidth };
+  const shares = useRef<{ left: number; right: number } | null>(null);
+  const applySizeRef = useRef<() => void>(() => {});
+
+  function applySize() {
+    const frame = frameRef.current;
+    if (!frame || frame.clientWidth < 80) return;
+    const width = frame.clientWidth;
+    if (!shares.current) shares.current = { left: LEFT_WIDTH / width, right: RIGHT_WIDTH / width };
+    setLeftWidth(shares.current.left * width);
+    setRightWidth(shares.current.right * width);
+  }
+  applySizeRef.current = applySize;
+
+  useEffect(() => {
+    publishCurrentScene(source, selected);
+    return () => clearCurrentScene(source);
+  }, [source, selected]);
 
   useEffect(() => {
     const frame = frameRef.current;
     if (!frame) return;
-    const fit = () => {
-      const available = Math.max(0, frame.clientWidth - MIN_CENTER - 2);
-      const { left, right } = widths.current;
-      if (left + right <= available) return;
-      const scale = available / Math.max(1, left + right);
-      setLeftWidth(left * scale);
-      setRightWidth(right * scale);
-    };
-    const observer = new ResizeObserver(fit);
+    const observer = new ResizeObserver(() => applySizeRef.current());
     observer.observe(frame);
+    applySizeRef.current();
     return () => observer.disconnect();
   }, []);
 
   function dragWidth(event: ReactPointerEvent<HTMLDivElement>, edge: "left" | "right") {
     const frame = frameRef.current;
-    if (!frame) return;
-    const origin = edge === "left" ? leftWidth : rightWidth;
-    const other = edge === "left" ? rightWidth : leftWidth;
-    const max = Math.max(MIN_COLUMN, frame.clientWidth - other - MIN_CENTER - 2);
+    const share = shares.current;
+    if (!frame || !share || frame.clientWidth < 80) return;
+    const width = frame.clientWidth;
+    const origin = (edge === "left" ? share.left : share.right) * width;
+    const other = (edge === "left" ? share.right : share.left) * width;
+    const max = Math.max(MIN_COLUMN, width - other - MIN_CENTER - 2);
     drag(event, "x", (point) => {
       const delta = edge === "left" ? point : -point;
       const next = Math.min(max, Math.max(MIN_COLUMN, origin + delta));
-      if (edge === "left") setLeftWidth(next);
-      else setRightWidth(next);
+      const portion = next / frame.clientWidth;
+      if (edge === "left") share.left = portion;
+      else share.right = portion;
+      setLeftWidth(share.left * frame.clientWidth);
+      setRightWidth(share.right * frame.clientWidth);
     });
   }
 
@@ -81,12 +95,12 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
   return (
     <ProjectPath.Provider value={source}>
       <div ref={frameRef} className="flex h-full min-h-0 bg-border text-[13px]">
-        <div ref={leftRef} className="flex min-h-0 min-w-0 shrink-0 flex-col" style={{ width: leftWidth }}>
-          <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: `${leftRatio} 1 0px` }}>
+        <div ref={leftRef} className="flex h-full min-h-0 min-w-0 shrink-0 flex-col" style={{ width: leftWidth }}>
+          <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: "none", height: `calc((100% - 1px) * ${leftRatio})` }}>
             <SceneNav locale={locale} projectPath={source} selected={selected} onSelect={setSelected} editable={editable} />
           </section>
           <Separator label={t("resizeSceneClues")} orientation="horizontal" onPointerDown={(event) => dragSplit(event, "left")} />
-          <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: `${1 - leftRatio} 1 0px` }}>
+          <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: "none", height: `calc((100% - 1px) * ${1 - leftRatio})` }}>
             <ClueColumn locale={locale} projectPath={source} recordPath={recordPath} selected={selected} editable={editable} />
           </section>
         </div>
@@ -96,12 +110,12 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
           <BodyEditor key={selected} projectPath={source} pageId={selected} editable={editable} />
         </section>
         <Separator label={t("resizeSideColumn")} orientation="vertical" onPointerDown={(event) => dragWidth(event, "right")} />
-        <div ref={rightRef} className="flex min-h-0 min-w-0 shrink-0 flex-col" style={{ width: rightWidth }}>
-          <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: `${rightRatio} 1 0px` }}>
+        <div ref={rightRef} className="flex h-full min-h-0 min-w-0 shrink-0 flex-col" style={{ width: rightWidth }}>
+          <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: "none", height: `calc((100% - 1px) * ${rightRatio})` }}>
             <NpcColumn locale={locale} projectPath={source} recordPath={recordPath} selected={selected} editable={editable} />
           </section>
           <Separator label={t("resizeNpcMap")} orientation="horizontal" onPointerDown={(event) => dragSplit(event, "right")} />
-          <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: `${1 - rightRatio} 1 0px` }}>
+          <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: "none", height: `calc((100% - 1px) * ${1 - rightRatio})` }}>
             <MapColumn locale={locale} projectPath={source} selected={selected} editable={editable} />
           </section>
         </div>

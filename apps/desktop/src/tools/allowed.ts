@@ -16,7 +16,7 @@ function loadInitial(): string[] {
       if (Array.isArray(parsed)) {
         const ids = parsed.filter((id) => !!CATALOG_MAP[id]);
         let changed = false;
-        for (const id of ["ek.scenario", "ek.character"]) {
+        for (const id of ["ek.scenario", "ek.character", "ek.copilot"]) {
           if (!ids.includes(id)) {
             ids.push(id);
             changed = true;

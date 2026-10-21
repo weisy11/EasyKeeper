@@ -166,8 +166,22 @@ export class WorkspaceController {
     this.userCollapsed = { left: false, right: false, bottom: false };
     this.restoring = false;
     await openTools(["ek.scenario"], this.panelCtx());
+    await this.placePrepCopilot();
     this.applyAutoCollapse(liveStore.get().auto);
     bumpLive();
+  }
+
+  /** Scenario keeps the left two thirds. KP Copilot keeps the right third. */
+  async placePrepCopilot() {
+    if (sessionStore.get()?.mode !== "prep") return;
+    await ensureToolsLoaded(["ek.copilot"]);
+    const scenario = this.panelFor("ek.scenario");
+    if (!scenario) return;
+    let copilot = this.panelFor("ek.copilot");
+    if (!copilot) copilot = this.openBeside(scenario, "ek.copilot", "right", { inactive: true });
+    const width = this.api.width || window.innerWidth;
+    copilot.group.api.setSize({ width: Math.max(280, Math.round(width / 3)) });
+    scenario.api.setActive();
   }
 
   /** Play mode: scenario on the left two thirds, character tool on the upper right third. */
@@ -203,7 +217,7 @@ export class WorkspaceController {
     bumpLive();
   }
 
-  private openBeside(reference: IDockviewPanel, toolId: string, direction: "right" | "below") {
+  private openBeside(reference: IDockviewPanel, toolId: string, direction: "right" | "below", opts?: { inactive?: boolean }) {
     const loaded = getLoadedTool(toolId);
     const catalog = CATALOG_MAP[toolId] ?? TOOL_MAP[toolId];
     const titleSrc = loaded?.title ?? catalog?.title;
@@ -214,6 +228,7 @@ export class WorkspaceController {
       params: { toolId },
       minimumWidth: 240,
       minimumHeight: 160,
+      inactive: opts?.inactive === true,
       position: { referencePanel: reference, direction },
     });
   }

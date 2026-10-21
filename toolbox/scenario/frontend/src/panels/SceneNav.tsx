@@ -1,7 +1,6 @@
-import { ChevronRight, FileText, Lock, MoreHorizontal, Plus, Trash2 } from "lucide-react";
+import { ChevronRight, FileText, MoreHorizontal, Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { readArticles, subscribeArticles } from "../articleStore";
-import { createScenarioNode, deleteScenarioNode, duplicateScenarioNode, loadNodeLocks, loadScenarioForest, placeScenarioNodes, projectDatabaseAvailable, renameScenarioNode, setNodeLocks, TRASH_ID, type ScenarioArticle, type ScenarioTreeNode } from "../db";
+import { createScenarioNode, deleteScenarioNode, duplicateScenarioNode, loadScenarioForest, placeScenarioNodes, projectDatabaseAvailable, renameScenarioNode, TRASH_ID, type ScenarioTreeNode } from "../db";
 import { publishSceneCatalog } from "../sceneLinks";
 import { onOpenEntity } from "../entityLink";
 import { scenarioT, type ScenarioLocale, type ScenarioStringKey } from "../i18n";
@@ -205,9 +204,6 @@ export function SceneNav({
   const [nodes, setNodes] = useState<NavNode[]>(() => (!usingDb && editable && projectPath !== "" ? initialScenes() : []));
   const [trash, setTrash] = useState<NavNode[]>([]);
   const [trashOpen, setTrashOpen] = useState(false);
-  const [locks, setLocks] = useState<Record<string, string[]>>({});
-  const [articles, setArticles] = useState<ScenarioArticle[]>(readArticles);
-  const [unlocking, setUnlocking] = useState<string | null>(null);
   const [openIds, setOpenIds] = useState<string[]>(() => (!usingDb && editable && projectPath !== "" ? ["scene1"] : []));
   const [hint, setHint] = useState<Hint | null>(null);
   const [menu, setMenu] = useState<{ id: string | null; x: number; y: number } | null>(null);
@@ -234,8 +230,6 @@ export function SceneNav({
     });
   }, [nodes, trash, locale]);
 
-  useEffect(() => subscribeArticles(setArticles), []);
-
   useEffect(() => onOpenEntity((detail) => {
     if (detail.kind !== "scene" && detail.kind !== "event") return;
     if (!forestSpot(nodes, trash, detail.id)) return;
@@ -255,14 +249,13 @@ export function SceneNav({
     catalogReady.current = false;
     publishSceneCatalog({ nodes: [], trash: [], ready: false });
     setDbError(false);
-    void Promise.all([loadScenarioForest(projectPath), loadNodeLocks(projectPath)]).then(([{ nodes: tree, trash: bin }, savedLocks]) => {
+    void loadScenarioForest(projectPath).then(({ nodes: tree, trash: bin }) => {
       if (cancelled) return;
       const next = tree.map(fromTree);
       const nextTrash = bin.map(fromTree);
       catalogReady.current = true;
       setNodes(next);
       setTrash(nextTrash);
-      setLocks(savedLocks);
       const visible = next.some((node) => contains(node, selectedRef.current)) || nextTrash.some((node) => contains(node, selectedRef.current));
       if (!visible) onSelect(next[0]?.id ?? "");
     }).catch((error: unknown) => {
@@ -302,19 +295,6 @@ export function SceneNav({
       window.removeEventListener("keydown", onKey);
     };
   }, [menu]);
-
-  function knownConditions(nodeId: string) {
-    const known = new Set(articles.map((item) => item.id));
-    return (locks[nodeId] ?? []).filter((id) => known.has(id));
-  }
-
-  async function saveUnlock(nodeId: string, articleIds: string[]) {
-    if (!editable || projectPath === "") return;
-    const known = new Set(articles.map((item) => item.id));
-    const next = articleIds.filter((id) => known.has(id));
-    setLocks((current) => ({ ...current, [nodeId]: next }));
-    if (usingDb) await setNodeLocks(projectPath, nodeId, next);
-  }
 
   function reportDbError(error: unknown) {
     console.error(error);
@@ -563,7 +543,6 @@ export function SceneNav({
               <ChevronRight className={`size-3.5 transition-transform ${expanded ? "rotate-90" : ""}`} />
             </button>
             <FileText className="size-3.5 shrink-0 text-muted-foreground" />
-            {knownConditions(node.id).length > 0 ? <Lock className="size-3.5 shrink-0 text-muted-foreground" data-locked="" /> : null}
             {renaming === node.id ? (
               <input
                 autoFocus
@@ -724,7 +703,6 @@ export function SceneNav({
               <MenuItem label={t("addEvent")} onClick={() => void addNode(menu.id, "event").catch(reportDbError)} />
               <MenuItem label={t("rename")} onClick={() => { setRenaming(menu.id); setMenu(null); }} />
               <MenuItem label={t("duplicate")} onClick={() => void duplicate(menu.id!).catch(reportDbError)} />
-              <MenuItem label={t("setUnlock")} onClick={() => { setUnlocking(menu.id); setMenu(null); }} />
               <div className="my-1 h-px bg-border" />
               {inTrash ? (
                 <MenuItem label={t("deleteNode")} danger onClick={() => void purge(menu.id!).catch(reportDbError)} />
@@ -733,40 +711,6 @@ export function SceneNav({
               )}
             </>
           )}
-        </div>
-      )}
-      {unlocking && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-6" onClick={() => setUnlocking(null)}>
-          <div
-            role="dialog"
-            aria-label={t("setUnlock")}
-            data-unlock=""
-            className="max-h-full w-[min(520px,100%)] overflow-auto rounded-md border border-border bg-background p-4 text-[13px] shadow-lg"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <h3 className="mb-2 text-sm font-semibold">{t("setUnlock")}</h3>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              {articles.filter((item) => !item.trashed || knownConditions(unlocking).includes(item.id)).map((item) => {
-                const checked = knownConditions(unlocking).includes(item.id);
-                return (
-                  <label key={item.id} data-unlock-article={item.id} data-trashed={item.trashed ? "true" : "false"} className={`flex max-w-full shrink-0 items-center gap-1.5 ${item.trashed ? "text-muted-foreground opacity-60" : ""}`}>
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      className="size-3.5 shrink-0"
-                      onChange={(event) => {
-                        const current = knownConditions(unlocking);
-                        const next = event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id);
-                        void saveUnlock(unlocking, next).catch(reportDbError);
-                      }}
-                    />
-                    <span>{item.name}</span>
-                    <span className="text-[11px] text-muted-foreground">{item.kind === "clue" ? t("clue") : t("item")}</span>
-                  </label>
-                );
-              })}
-            </div>
-          </div>
         </div>
       )}
     </div>

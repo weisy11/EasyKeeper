@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 import { BookOpenIcon } from "lucide-react";
 import { defineTool } from "@ek/tool-api";
+import { scenarioModuleData } from "./moduleData";
 import { ScenarioPanel } from "./panels/ScenarioPanel";
 
 export { createScenarioNode, deleteScenarioNode, duplicateScenarioNode, ensureScenarioSchema, listChildNodes, loadScenarioTree, placeScenarioNodes, renameScenarioNode } from "./db";
@@ -13,5 +14,6 @@ export const scenarioTool = defineTool({
   minWidth: 720,
   minHeight: 420,
   dependencies: [],
+  moduleData: scenarioModuleData,
   panels: [{ id: "board", component: ScenarioPanel }],
 });

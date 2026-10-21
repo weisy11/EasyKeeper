@@ -1,8 +1,15 @@
+mod app_state;
+mod copilot;
+mod copilot_chats;
+mod copilot_http;
 mod geometry;
 mod project_db;
 mod session;
 mod snapshot;
 
+use app_state::{app_state_load, app_state_save};
+use copilot::{copilot_complete, copilot_delete_provider, copilot_list_models, copilot_providers, copilot_proxies, copilot_save_provider, copilot_save_proxy, copilot_stop, open_copilot_editor};
+use copilot_chats::{copilot_chat_list, copilot_chat_load, copilot_chat_save, copilot_module_chat_get, copilot_module_chat_set};
 use geometry::{MainWindowState, Rect};
 use session::{session_get, session_set, LaunchMemory};
 use snapshot::{create_project_snapshot, delete_project_snapshot, list_project_snapshots};
@@ -139,6 +146,29 @@ fn remove_file(path: String) -> Result<(), String> {
 #[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
   std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_http_url(url: String) -> Result<(), String> {
+  let url = url.trim();
+  let https = url.strip_prefix("https://");
+  let http = url.strip_prefix("http://");
+  let rest = https.or(http).unwrap_or("");
+  if rest.is_empty() || url.chars().any(|ch| ch.is_whitespace() || ch.is_control() || ch == '"' || ch == '\'') {
+    return Err("bad-url".into());
+  }
+  #[cfg(target_os = "macos")]
+  let mut command = std::process::Command::new("open");
+  #[cfg(target_os = "windows")]
+  let mut command = std::process::Command::new("cmd");
+  #[cfg(all(unix, not(target_os = "macos")))]
+  let mut command = std::process::Command::new("xdg-open");
+  #[cfg(target_os = "windows")]
+  command.args(["/C", "start", "", url]);
+  #[cfg(not(target_os = "windows"))]
+  command.arg(url);
+  command.spawn().map_err(|err| err.to_string())?;
+  Ok(())
 }
 
 #[tauri::command]
@@ -441,7 +471,7 @@ fn close_project_connections(paths: Vec<String>) {
 
 #[tauri::command]
 fn close_popout_windows(app: AppHandle) {
-  let labels: Vec<String> = app.webview_windows().keys().filter(|label| label.starts_with("popout-")).cloned().collect();
+  let labels: Vec<String> = app.webview_windows().keys().filter(|label| label.starts_with("popout-") || label.as_str() == "copilot-editor").cloned().collect();
   for label in labels {
     if let Some(window) = app.get_webview_window(&label) {
       let _ = window.destroy();
@@ -503,6 +533,7 @@ pub fn run() {
       focus_window,
       reset_main_window_state,
       write_text_file,
+      open_http_url,
       remove_file,
       read_text_file,
       write_base64_file,
@@ -514,6 +545,22 @@ pub fn run() {
       delete_project_snapshot,
       documents_dir,
       pick_export_folder,
+      copilot_providers,
+      copilot_save_provider,
+      copilot_delete_provider,
+      copilot_proxies,
+      copilot_save_proxy,
+      copilot_complete,
+      copilot_list_models,
+      copilot_stop,
+      copilot_chat_list,
+      copilot_chat_load,
+      copilot_chat_save,
+      copilot_module_chat_get,
+      copilot_module_chat_set,
+      open_copilot_editor,
+      app_state_load,
+      app_state_save,
       join_path,
       ensure_dir,
       path_exists,

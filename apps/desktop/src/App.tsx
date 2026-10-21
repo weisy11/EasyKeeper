@@ -49,6 +49,7 @@ import {
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from "@/components/ui/command";
 import { TOOL_MAP, TOOLS, UNKNOWN_ICON } from "./tools";
 import { allowedToolsStore, getLoadedTool, getToolError, isAllowed, loadedToolsStore, setAllowed } from "./tools/allowed";
+import { loadModuleData } from "./tools/loader";
 import { appLog, chromeStore, settingsStore, useStore } from "./lib/store";
 import { t, translate, useL, useT, type I18nKey } from "./lib/i18n";
 import { WelcomePage } from "./project/WelcomePage";
@@ -167,7 +168,7 @@ function ToolPanel(props: IDockviewPanelProps<{ toolId: string }>) {
 
   return (
     <PanelErrorBoundary>
-      <C panelId={toolId} projectPath={session?.projectPath ?? ""} modulePath={session?.modulePath ?? null} mode={session?.mode ?? "prep"} moduleEditable={session?.moduleEditable ?? false} />
+      <C panelId={toolId} projectPath={session?.projectPath ?? ""} modulePath={session?.modulePath ?? null} mode={session?.mode ?? "prep"} moduleEditable={session?.moduleEditable ?? false} loadModuleData={loadModuleData} />
     </PanelErrorBoundary>
   );
 }
@@ -294,6 +295,7 @@ function WorkspaceView({ id, visible }: { id: string; visible: boolean }) {
       await ctrl.buildDefault();
       appLog(`★ ${id}: built-in default layout`);
     }
+    if (sessionStore.get()?.mode === "prep") await ctrl.placePrepCopilot();
     ctrl.applyAutoCollapse(liveStore.get().auto);
     ctrl.setLocked(chromeStore.get().locked);
     bumpLive();
@@ -719,6 +721,10 @@ function DesktopApp() {
 }
 
 export default function App() {
+  return <WorkspaceApp />;
+}
+
+function WorkspaceApp() {
   const session = useStore(sessionStore);
   const { theme, locale } = useStore(settingsStore);
   const welcome = session == null;

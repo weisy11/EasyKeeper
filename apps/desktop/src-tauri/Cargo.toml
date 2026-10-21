@@ -25,6 +25,12 @@ base64 = "0.22.1"
 rusqlite = { version = "0.37.0", features = ["bundled", "hooks", "backup"] }
 tauri = { version = "2.12.0", features = [] }
 tauri-plugin-dialog = "2"
+aes-gcm = "0.10"
+sha2 = "0.10"
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "socks"] }
+tokio = { version = "1", features = ["macros", "sync"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
