@@ -50,9 +50,28 @@ pub fn set_close_project_enabled(app: &tauri::AppHandle, enabled: bool) {
   }
 }
 
+/// Let the webview load `{dir}/images/*` through the asset protocol. The scope starts empty and only
+/// ever grows by the folders of projects opened in this process; Tauri has no call to shrink it again.
+fn allow_image_dir(app: &tauri::AppHandle, dir: &str) {
+  use tauri::Manager;
+  // Requests are canonicalized before the scope check, so the pattern must be too (`/var` → `/private/var`).
+  // `images/` may not exist yet; canonicalize the project folder and append it.
+  let root = std::fs::canonicalize(dir).unwrap_or_else(|_| Path::new(dir).to_path_buf());
+  let images = root.join("images");
+  if let Err(err) = app.asset_protocol_scope().allow_directory(&images, false) {
+    eprintln!("[RUST] asset scope: cannot allow {}: {err}", images.display());
+  }
+}
+
 #[tauri::command]
 pub fn session_set(app: tauri::AppHandle, state: State<LaunchMemory>, session: Option<OpenSession>) {
   let enabled = session.is_some();
+  if let Some(open) = &session {
+    allow_image_dir(&app, &open.project_path);
+    if let Some(module) = &open.module_path {
+      allow_image_dir(&app, module);
+    }
+  }
   *state.session.lock().expect("session lock") = session;
   set_close_project_enabled(&app, enabled);
 }

@@ -1,5 +1,9 @@
 import type { ComponentType } from "react";
 
+export { serial } from "./serial";
+export * from "./files";
+export * from "./images";
+
 export type LText = { zh: string; en: string };
 
 export type ToolRegion = "center" | "left" | "right" | "bottom";
@@ -148,3 +152,46 @@ export type ToolDefinition = {
 export function defineTool(def: ToolDefinition): ToolDefinition {
   return { ...def, dependencies: def.dependencies ?? [] };
 }
+
+/** Window event tools use to put a line in the host status bar. */
+export const STATUS_EVENT = "ek:status";
+
+export type StatusLevel = "info" | "error";
+
+/**
+ * One status-bar entry. The `key` names the thing being reported (for example a page id), so a
+ * later report with the same key replaces the earlier one and `text: null` removes it.
+ * `ttlMs` makes an entry disappear on its own; omit it for conditions that are cleared explicitly.
+ */
+export type StatusReport =
+  | { key: string; level?: StatusLevel; text: string; detail?: string; ttlMs?: number }
+  | { key: string; text: null };
+
+export function reportStatus(report: StatusReport) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(STATUS_EVENT, { detail: report }));
+}
+
+/**
+ * Host-owned key/value store for settings that are not tied to one project (the host keeps it in
+ * `app.sqlite`). Reads are synchronous from a cache the host fills at boot; writes are persisted
+ * in the background. Keys should be namespaced by tool, for example `ek.copilot.promptLibrary`.
+ */
+export type AppKv = {
+  get(key: string): string | null;
+  set(key: string, value: string): void;
+  remove(key: string): void;
+};
+
+let kvBridge: AppKv | null = null;
+
+/** Called once by the host before any tool loads. */
+export function registerAppKv(impl: AppKv) {
+  kvBridge = impl;
+}
+
+export const appKv: AppKv = {
+  get: (key) => kvBridge?.get(key) ?? null,
+  set: (key, value) => kvBridge?.set(key, value),
+  remove: (key) => kvBridge?.remove(key),
+};
