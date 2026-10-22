@@ -100,14 +100,21 @@ export function ProxyDialog({ proxies, onClose, onSaved }: { proxies: ProxyView[
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-6" onPointerDown={onClose}>
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-6">
       <div
         role="dialog"
         aria-label={t("editProxy")}
-        className="w-[min(560px,100%)] rounded-md border border-border bg-background p-4 text-[13px] text-foreground shadow-lg"
+        className="w-[min(560px,100%)] rounded-md border border-border bg-background p-4 text-sm text-foreground shadow-lg"
         onPointerDown={(event) => event.stopPropagation()}
       >
-        <h2 className="mb-3 text-sm font-semibold">{t("editProxy")}</h2>
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <h2 className="min-w-0 text-base font-semibold">{t("editProxy")}</h2>
+          <button type="button" aria-label={t("close")} className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-muted" onClick={onClose}>
+            <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        </div>
         <div className="h-32 overflow-y-auto rounded-md border border-border">
           {items.map((proxy) => (
             <button key={proxy.id} type="button" className={`block h-8 w-full truncate px-2 text-left hover:bg-blue-500/15 ${proxy.id === draft.id ? "bg-blue-500 text-white" : ""}`} onClick={() => choose(proxy)}>
@@ -129,10 +136,10 @@ export function ProxyDialog({ proxies, onClose, onSaved }: { proxies: ProxyView[
           {t("addProxy")}
         </button>
         <div className="mt-3 grid grid-cols-[1fr_6.5rem_1.2fr_4.5rem_1.75rem] gap-x-2 gap-y-1">
-          <span className="text-muted-foreground">{t("name")}</span>
-          <span className="text-muted-foreground">{t("proxyProtocol")}</span>
-          <span className="text-muted-foreground">{t("proxyHost")}</span>
-          <span className="text-muted-foreground">{t("proxyPort")}</span>
+          <span className="text-base text-muted-foreground">{t("name")}</span>
+          <span className="text-base text-muted-foreground">{t("proxyProtocol")}</span>
+          <span className="text-base text-muted-foreground">{t("proxyHost")}</span>
+          <span className="text-base text-muted-foreground">{t("proxyPort")}</span>
           <span />
           <input className={control} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
           <select className={control} value={draft.protocol} onChange={(event) => setDraft({ ...draft, protocol: event.target.value === "http" ? "http" : "socks5" })}>
@@ -151,11 +158,11 @@ export function ProxyDialog({ proxies, onClose, onSaved }: { proxies: ProxyView[
         {authOpen ? (
           <div className="mt-2 grid grid-cols-2 gap-2">
             <label className="flex flex-col gap-1">
-              <span className="text-muted-foreground">{t("proxyUser")}</span>
+              <span className="text-base text-muted-foreground">{t("proxyUser")}</span>
               <input className={control} value={draft.username} placeholder={draft.hasAuth ? t("savedKey") : ""} autoComplete="off" onChange={(event) => setDraft({ ...draft, username: event.target.value })} />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-muted-foreground">{t("proxyPassword")}</span>
+              <span className="text-base text-muted-foreground">{t("proxyPassword")}</span>
               <input className={control} type="password" value={draft.password} placeholder={draft.hasAuth ? t("savedKey") : ""} autoComplete="off" onChange={(event) => setDraft({ ...draft, password: event.target.value })} />
             </label>
           </div>
@@ -169,7 +176,7 @@ export function ProxyDialog({ proxies, onClose, onSaved }: { proxies: ProxyView[
             {t("cancel")}
           </button>
           <button type="button" className="h-8 rounded-md border border-foreground bg-foreground px-3 text-background disabled:opacity-40" disabled={saving} onClick={() => void commit(true)}>
-            {t("confirm")}
+            {t("ok")}
           </button>
         </div>
       </div>

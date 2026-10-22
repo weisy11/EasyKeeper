@@ -33,16 +33,21 @@ export function deleteProvider(name: string) {
   return invoke<ProviderView[]>("copilot_delete_provider", { name });
 }
 
-export function completeChat(request: { requestId: string; service: string; model: string; messages: { role: string; text: string }[] }) {
+/** Backend failures look like `code:detail`. The code picks the message; the detail (status line, body excerpt) is shown as-is. */
+export function failureParts(error: unknown): { code: string; detail: string } {
+  const text = String(error);
+  const split = text.indexOf(":");
+  if (split < 0) return { code: text, detail: "" };
+  return { code: text.slice(0, split), detail: text.slice(split + 1).trim() };
+}
+
+/** The newest user turn must already be appended; Rust reads the context from the chat. */
+export function completeChat(request: { requestId: string; chatId: string; service: string; model: string }) {
   return invoke<string>("copilot_complete", { request });
 }
 
 export function stopChat(requestId: string) {
   return invoke<void>("copilot_stop", { requestId });
-}
-
-export function openCopilotEditor() {
-  return invoke<void>("open_copilot_editor");
 }
 
 export function listModels(input: { service?: string; apiKey?: string; vendor: string; format: string; address: string; proxyId?: string }) {
@@ -82,8 +87,12 @@ export type ChatSummary = {
   updatedAt: number;
 };
 
-export type ChatRecord = ChatSummary & {
-  messages: ChatMessageRecord[];
+export type StoredMessage = ChatMessageRecord & { pos: number };
+
+/** Chat-level fields, sent with every append so the row exists before its first message. */
+export type ChatMeta = {
+  id: string;
+  title: string;
   /** Scenario this chat was started in. Empty when the chat has no module. */
   modulePath: string;
   moduleName: string;
@@ -92,16 +101,34 @@ export type ChatRecord = ChatSummary & {
   model: string;
 };
 
+/** The latest rolling summary: everything up to `coversTo` is sent to the model as this text. */
+export type ContextSummary = { coversTo: number; text: string };
+
+export type ChatOpen = ChatMeta & {
+  updatedAt: number;
+  total: number;
+  /** Newest page, in chat order. */
+  messages: StoredMessage[];
+  summary: ContextSummary | null;
+};
+
 export function listChats() {
   return invoke<ChatSummary[]>("copilot_chat_list");
 }
 
-export function loadChat(id: string) {
-  return invoke<ChatRecord>("copilot_chat_load", { id });
+/** `null` when the chat does not exist on this machine. */
+export function openChatRecord(id: string) {
+  return invoke<ChatOpen | null>("copilot_chat_open", { id });
 }
 
-export function saveChat(chat: ChatRecord) {
-  return invoke<void>("copilot_chat_save", { chat });
+/** Up to one page of messages older than `before`, in chat order. */
+export function olderMessages(id: string, before: number) {
+  return invoke<StoredMessage[]>("copilot_chat_messages", { id, before });
+}
+
+/** Append one turn; returns its position. Messages are never edited afterwards. */
+export function appendMessage(meta: ChatMeta, message: ChatMessageRecord) {
+  return invoke<number>("copilot_message_append", { meta, message });
 }
 
 export function loadModuleChat(modulePath: string) {

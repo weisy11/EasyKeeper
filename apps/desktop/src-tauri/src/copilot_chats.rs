@@ -1,12 +1,19 @@
-//! Copilot transcripts live beside the app config, not inside a scenario project.
+//! Copilot transcripts in `app.sqlite`.
+//!
+//! `copilot_chat` is the history list, `copilot_message` holds one row per turn (append-only:
+//! messages are never edited), and `copilot_summary` holds the rolling context summaries. What the
+//! panel shows (the newest page plus whatever the user scrolled back to) and what the model gets
+//! (the latest summary plus every message after it) are separate reads over the same rows.
 
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
-const DIR_NAME: &str = "copilot-chats";
 const MODULE_FILE: &str = "copilot-chat.json";
+/// Messages shown when a chat opens, and per page when scrolling back.
+pub const PAGE_SIZE: i64 = 10;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,19 +30,25 @@ pub struct ChatMessage {
     pub thought_seconds: Option<u32>,
 }
 
+/// A message as stored, with its position in the chat.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredMessage {
+    pub pos: i64,
+    #[serde(flatten)]
+    pub message: ChatMessage,
+}
+
+/// Chat-level fields. Sent with every append so the row exists before its first message.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatRecord {
+pub struct ChatMeta {
     pub id: String,
     pub title: String,
-    pub updated_at: i64,
-    pub messages: Vec<ChatMessage>,
-    /// Scenario this chat was started in. Empty for chats created before the field existed.
     #[serde(default)]
     pub module_path: String,
     #[serde(default)]
     pub module_name: String,
-    /// Provider service name and model id last used for this chat.
     #[serde(default)]
     pub service: String,
     #[serde(default)]
@@ -50,64 +63,217 @@ pub struct ChatSummary {
     pub updated_at: i64,
 }
 
-fn chats_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_config_dir().map_err(|err| err.to_string())?.join(DIR_NAME);
-    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
-    Ok(dir)
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextSummary {
+    pub covers_to: i64,
+    pub text: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatOpen {
+    #[serde(flatten)]
+    pub meta: ChatMeta,
+    pub updated_at: i64,
+    pub total: i64,
+    /// Newest `PAGE_SIZE` messages in chat order.
+    pub messages: Vec<StoredMessage>,
+    pub summary: Option<ContextSummary>,
 }
 
 fn safe_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 80
-        && id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    !id.is_empty() && id.len() <= 80 && id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
 }
 
-fn chat_path(dir: &PathBuf, id: &str) -> Result<PathBuf, String> {
-    if !safe_id(id) {
-        return Err("bad-id".into());
-    }
-    Ok(dir.join(format!("{id}.json")))
+fn check_id(id: &str) -> Result<&str, String> {
+    let id = id.trim();
+    if safe_id(id) { Ok(id) } else { Err("bad-id".into()) }
 }
 
-#[tauri::command]
-pub fn copilot_chat_list(app: AppHandle) -> Result<Vec<ChatSummary>, String> {
-    let dir = chats_dir(&app)?;
-    let mut items = Vec::new();
-    for entry in fs::read_dir(&dir).map_err(|err| err.to_string())? {
-        let entry = entry.map_err(|err| err.to_string())?;
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
+fn row_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage> {
+    Ok(StoredMessage {
+        pos: row.get(0)?,
+        message: ChatMessage {
+            id: row.get(1)?,
+            role: row.get(2)?,
+            text: row.get(3)?,
+            prompt: row.get(4)?,
+            thinking: row.get(5)?,
+            thought_seconds: row.get(6)?,
+        },
+    })
+}
+
+const MESSAGE_COLUMNS: &str = "pos, id, role, text, prompt, thinking, thought_seconds";
+
+pub fn list(conn: &Connection) -> Result<Vec<ChatSummary>, String> {
+    let mut statement = conn
+        .prepare("SELECT id, title, updated_at FROM copilot_chat WHERE message_count > 0 ORDER BY updated_at DESC")
+        .map_err(|err| err.to_string())?;
+    let rows = statement
+        .query_map([], |row| Ok(ChatSummary { id: row.get(0)?, title: row.get(1)?, updated_at: row.get(2)? }))
+        .map_err(|err| err.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|err| err.to_string())
+}
+
+pub fn latest_summary(conn: &Connection, chat_id: &str) -> Result<Option<ContextSummary>, String> {
+    conn.query_row(
+        "SELECT covers_to, text FROM copilot_summary WHERE chat_id = ?1 ORDER BY covers_to DESC LIMIT 1",
+        params![chat_id],
+        |row| Ok(ContextSummary { covers_to: row.get(0)?, text: row.get(1)? }),
+    )
+    .optional()
+    .map_err(|err| err.to_string())
+}
+
+/// Messages with `pos > after`, in chat order. `after = -1` returns everything.
+pub fn messages_after(conn: &Connection, chat_id: &str, after: i64) -> Result<Vec<StoredMessage>, String> {
+    let mut statement = conn
+        .prepare(&format!("SELECT {MESSAGE_COLUMNS} FROM copilot_message WHERE chat_id = ?1 AND pos > ?2 ORDER BY pos"))
+        .map_err(|err| err.to_string())?;
+    let rows = statement.query_map(params![chat_id, after], row_message).map_err(|err| err.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|err| err.to_string())
+}
+
+/// Up to `limit` messages with `pos < before`, returned in chat order (oldest first).
+pub fn messages_before(conn: &Connection, chat_id: &str, before: i64, limit: i64) -> Result<Vec<StoredMessage>, String> {
+    let mut statement = conn
+        .prepare(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM copilot_message WHERE chat_id = ?1 AND pos < ?2 ORDER BY pos DESC LIMIT ?3"
+        ))
+        .map_err(|err| err.to_string())?;
+    let rows = statement.query_map(params![chat_id, before, limit], row_message).map_err(|err| err.to_string())?;
+    let mut page = rows.collect::<Result<Vec<_>, _>>().map_err(|err| err.to_string())?;
+    page.reverse();
+    Ok(page)
+}
+
+pub fn open(conn: &Connection, chat_id: &str) -> Result<Option<ChatOpen>, String> {
+    let head = conn
+        .query_row(
+            "SELECT title, updated_at, module_path, module_name, service, model, message_count FROM copilot_chat WHERE id = ?1",
+            params![chat_id],
+            |row| {
+                Ok((
+                    ChatMeta {
+                        id: chat_id.to_string(),
+                        title: row.get(0)?,
+                        module_path: row.get(2)?,
+                        module_name: row.get(3)?,
+                        service: row.get(4)?,
+                        model: row.get(5)?,
+                    },
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|err| err.to_string())?;
+    let Some((meta, updated_at, total)) = head else { return Ok(None) };
+    let messages = messages_before(conn, chat_id, i64::MAX, PAGE_SIZE)?;
+    let summary = latest_summary(conn, chat_id)?;
+    Ok(Some(ChatOpen { meta, updated_at, total, messages, summary }))
+}
+
+/// Upsert the chat row and append one message. Returns the message position.
+pub fn append(conn: &Connection, meta: &ChatMeta, message: &ChatMessage) -> Result<i64, String> {
+    let now = crate::app_db::now_millis();
+    let tx = conn.unchecked_transaction().map_err(|err| err.to_string())?;
+    tx.execute(
+        "INSERT INTO copilot_chat (id, title, updated_at, module_path, module_name, service, model, message_count)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)
+         ON CONFLICT(id) DO UPDATE SET
+           title = excluded.title, updated_at = excluded.updated_at,
+           module_path = excluded.module_path, module_name = excluded.module_name,
+           service = excluded.service, model = excluded.model",
+        params![meta.id, meta.title, now, meta.module_path, meta.module_name, meta.service, meta.model],
+    )
+    .map_err(|err| err.to_string())?;
+    let pos: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(pos), -1) + 1 FROM copilot_message WHERE chat_id = ?1",
+            params![meta.id],
+            |row| row.get(0),
+        )
+        .map_err(|err| err.to_string())?;
+    tx.execute(
+        "INSERT INTO copilot_message (chat_id, pos, id, role, text, prompt, thinking, thought_seconds)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![meta.id, pos, message.id, message.role, message.text, message.prompt, message.thinking, message.thought_seconds],
+    )
+    .map_err(|err| err.to_string())?;
+    tx.execute(
+        "UPDATE copilot_chat SET message_count = message_count + 1 WHERE id = ?1",
+        params![meta.id],
+    )
+    .map_err(|err| err.to_string())?;
+    tx.commit().map_err(|err| err.to_string())?;
+    Ok(pos)
+}
+
+pub fn insert_summary(conn: &Connection, chat_id: &str, covers_to: i64, text: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO copilot_summary (chat_id, covers_to, text, created_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(chat_id, covers_to) DO UPDATE SET text = excluded.text, created_at = excluded.created_at",
+        params![chat_id, covers_to, text, crate::app_db::now_millis()],
+    )
+    .map(|_| ())
+    .map_err(|err| err.to_string())
+}
+
+/// Rough token count, the same rule as the panel's `estimateTokens`: every non-ASCII character is
+/// one token, ASCII counts one token per four characters.
+pub fn estimate_tokens(text: &str) -> u64 {
+    let mut tokens = 0u64;
+    let mut ascii = 0u64;
+    for ch in text.chars() {
+        if ch.is_ascii() {
+            ascii += 1;
+        } else {
+            tokens += ascii.div_ceil(4);
+            ascii = 0;
+            tokens += 1;
         }
-        let text = fs::read_to_string(&path).map_err(|err| err.to_string())?;
-        let Ok(chat) = serde_json::from_str::<ChatRecord>(&text) else {
-            continue;
-        };
-        if chat.messages.is_empty() {
-            continue;
-        }
-        items.push(ChatSummary { id: chat.id, title: chat.title, updated_at: chat.updated_at });
     }
-    items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    Ok(items)
+    tokens + ascii.div_ceil(4)
 }
 
 #[tauri::command]
-pub fn copilot_chat_load(app: AppHandle, id: String) -> Result<ChatRecord, String> {
-    let path = chat_path(&chats_dir(&app)?, id.trim())?;
-    let text = fs::read_to_string(&path).map_err(|err| err.to_string())?;
-    serde_json::from_str(&text).map_err(|err| err.to_string())
+pub async fn copilot_chat_list(app: AppHandle) -> Result<Vec<ChatSummary>, String> {
+    crate::blocking::run(move || crate::app_db::with(&app, list)).await
 }
 
 #[tauri::command]
-pub fn copilot_chat_save(app: AppHandle, chat: ChatRecord) -> Result<(), String> {
-    let dir = chats_dir(&app)?;
-    let path = chat_path(&dir, chat.id.trim())?;
-    let text = serde_json::to_string_pretty(&chat).map_err(|err| err.to_string())?;
-    let temp = path.with_extension("json.tmp");
-    fs::write(&temp, text).map_err(|err| err.to_string())?;
-    fs::rename(&temp, &path).map_err(|err| err.to_string())?;
-    Ok(())
+pub async fn copilot_chat_open(app: AppHandle, id: String) -> Result<Option<ChatOpen>, String> {
+    crate::blocking::run(move || {
+        let id = check_id(&id)?;
+        crate::app_db::with(&app, |conn| open(conn, id))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn copilot_chat_messages(app: AppHandle, id: String, before: i64) -> Result<Vec<StoredMessage>, String> {
+    crate::blocking::run(move || {
+        let id = check_id(&id)?;
+        crate::app_db::with(&app, |conn| messages_before(conn, id, before, PAGE_SIZE))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn copilot_message_append(app: AppHandle, meta: ChatMeta, message: ChatMessage) -> Result<i64, String> {
+    crate::blocking::run(move || {
+        let meta = ChatMeta { id: check_id(&meta.id)?.to_string(), ..meta };
+        let pos = crate::app_db::with(&app, |conn| append(conn, &meta, &message))?;
+        if message.role == "assistant" {
+            crate::copilot::maybe_compress(&app, &meta.id);
+        }
+        Ok(pos)
+    })
+    .await
 }
 
 #[derive(Serialize, Deserialize)]
@@ -124,10 +290,17 @@ fn module_chat_file(module_path: &str) -> Result<PathBuf, String> {
     Ok(dir.join(MODULE_FILE))
 }
 
-/// Chat id the module last had open. Missing file or a bad id is "no chat".
 #[tauri::command]
-pub fn copilot_module_chat_get(module_path: String) -> Result<Option<String>, String> {
-    let path = match module_chat_file(&module_path) {
+pub async fn copilot_module_chat_get(module_path: String) -> Result<Option<String>, String> {
+    crate::blocking::run(move || {
+        let _files = crate::blocking::files();
+        module_chat_get(&module_path)
+    })
+    .await
+}
+
+fn module_chat_get(module_path: &str) -> Result<Option<String>, String> {
+    let path = match module_chat_file(module_path) {
         Ok(path) => path,
         Err(_) => return Ok(None),
     };
@@ -141,15 +314,97 @@ pub fn copilot_module_chat_get(module_path: String) -> Result<Option<String>, St
 }
 
 #[tauri::command]
-pub fn copilot_module_chat_set(module_path: String, chat_id: String) -> Result<(), String> {
-    let id = chat_id.trim();
-    if !safe_id(id) {
-        return Err("bad-id".into());
+pub async fn copilot_module_chat_set(module_path: String, chat_id: String) -> Result<(), String> {
+    crate::blocking::run(move || {
+        let _files = crate::blocking::files();
+        let id = check_id(&chat_id)?;
+        let path = module_chat_file(&module_path)?;
+        let text = serde_json::to_string_pretty(&ModuleChatPointer { last_chat_id: id.to_string() }).map_err(|err| err.to_string())?;
+        let temp = path.with_extension("json.tmp");
+        fs::write(&temp, text).map_err(|err| err.to_string())?;
+        fs::rename(&temp, &path).map_err(|err| err.to_string())?;
+        Ok(())
+    })
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn memory_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("memory db");
+        for sql in crate::app_db::SCHEMA {
+            conn.execute_batch(sql).expect("schema");
+        }
+        conn
     }
-    let path = module_chat_file(&module_path)?;
-    let text = serde_json::to_string_pretty(&ModuleChatPointer { last_chat_id: id.to_string() }).map_err(|err| err.to_string())?;
-    let temp = path.with_extension("json.tmp");
-    fs::write(&temp, text).map_err(|err| err.to_string())?;
-    fs::rename(&temp, &path).map_err(|err| err.to_string())?;
-    Ok(())
+
+    fn meta(id: &str) -> ChatMeta {
+        ChatMeta { id: id.into(), title: "t".into(), module_path: String::new(), module_name: String::new(), service: "svc".into(), model: "m".into() }
+    }
+
+    fn message(role: &str, text: &str) -> ChatMessage {
+        ChatMessage { id: uuid::Uuid::new_v4().to_string(), role: role.into(), text: text.into(), prompt: None, thinking: None, thought_seconds: None }
+    }
+
+    #[test]
+    fn append_numbers_messages_and_lists_only_chats_with_messages() {
+        let conn = memory_db();
+        assert_eq!(append(&conn, &meta("a"), &message("user", "hi")).unwrap(), 0);
+        assert_eq!(append(&conn, &meta("a"), &message("assistant", "hello")).unwrap(), 1);
+        assert_eq!(append(&conn, &meta("b"), &message("user", "later")).unwrap(), 0);
+        let listed = list(&conn).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(listed[0].updated_at >= listed[1].updated_at);
+        let opened = open(&conn, "a").unwrap().unwrap();
+        assert_eq!(opened.total, 2);
+        assert_eq!(opened.messages.len(), 2);
+        assert_eq!(opened.messages[0].pos, 0);
+        assert!(opened.summary.is_none());
+        assert!(open(&conn, "missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn open_returns_the_newest_page_and_older_pages_follow() {
+        let conn = memory_db();
+        for i in 0..25 {
+            append(&conn, &meta("c"), &message(if i % 2 == 0 { "user" } else { "assistant" }, &format!("m{i}"))).unwrap();
+        }
+        let opened = open(&conn, "c").unwrap().unwrap();
+        assert_eq!(opened.total, 25);
+        let shown: Vec<i64> = opened.messages.iter().map(|m| m.pos).collect();
+        assert_eq!(shown, (15..25).collect::<Vec<_>>());
+        let older = messages_before(&conn, "c", 15, PAGE_SIZE).unwrap();
+        assert_eq!(older.iter().map(|m| m.pos).collect::<Vec<_>>(), (5..15).collect::<Vec<_>>());
+        let oldest = messages_before(&conn, "c", 5, PAGE_SIZE).unwrap();
+        assert_eq!(oldest.iter().map(|m| m.pos).collect::<Vec<_>>(), (0..5).collect::<Vec<_>>());
+        assert!(messages_before(&conn, "c", 0, PAGE_SIZE).unwrap().is_empty());
+    }
+
+    #[test]
+    fn summary_splits_what_the_model_sees() {
+        let conn = memory_db();
+        for i in 0..6 {
+            append(&conn, &meta("d"), &message(if i % 2 == 0 { "user" } else { "assistant" }, &format!("m{i}"))).unwrap();
+        }
+        assert!(latest_summary(&conn, "d").unwrap().is_none());
+        insert_summary(&conn, "d", 3, "first summary").unwrap();
+        insert_summary(&conn, "d", 1, "older summary").unwrap();
+        let summary = latest_summary(&conn, "d").unwrap().unwrap();
+        assert_eq!(summary.covers_to, 3);
+        assert_eq!(summary.text, "first summary");
+        let after = messages_after(&conn, "d", summary.covers_to).unwrap();
+        assert_eq!(after.iter().map(|m| m.pos).collect::<Vec<_>>(), vec![4, 5]);
+        assert_eq!(messages_after(&conn, "d", -1).unwrap().len(), 6);
+    }
+
+    #[test]
+    fn token_estimate_matches_the_panel_rule() {
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("abcd"), 1);
+        assert_eq!(estimate_tokens("abcde"), 2);
+        assert_eq!(estimate_tokens("你好"), 2);
+        assert_eq!(estimate_tokens("ab你cd"), 3);
+    }
 }

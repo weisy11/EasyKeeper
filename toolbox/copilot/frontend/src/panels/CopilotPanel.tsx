@@ -1,13 +1,31 @@
-import type { ToolPanelProps } from "@ek/tool-api";
+import { reportStatus, type ToolPanelProps } from "@ek/tool-api";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { copilotT, type CopilotLocale, type CopilotStringKey } from "../i18n";
 import { useCopilotLocale } from "../locale";
-import { completeChat, listChats, loadChat, loadModuleChat, loadProviders, readModuleName, saveChat, saveModuleChat, stopChat, type ChatSummary, type ProviderView } from "../store";
+import {
+  appendMessage,
+  completeChat,
+  failureParts,
+  listChats,
+  loadModuleChat,
+  loadProviders,
+  olderMessages,
+  openChatRecord,
+  readModuleName,
+  saveModuleChat,
+  stopChat,
+  type ChatMeta,
+  type ChatOpen,
+  type ChatSummary,
+  type ContextSummary,
+  type ProviderView,
+  type StoredMessage,
+} from "../store";
 import { contextMessage } from "../contextPrompt";
 import { ContextDialog, defaultContextTags, type ContextTag } from "./ContextDialog";
 import { PromptTemplateDialog } from "./PromptTemplateDialog";
-import { activePromptBody, defaultPromptLibrary, type PromptLibrary } from "../promptTemplates";
+import { activePromptBody, loadPromptLibrary, savePromptLibrary, type PromptLibrary } from "../promptTemplates";
 import { CopilotEditorDialog } from "./Editor";
 import { MarkdownText } from "./Markdown";
 
@@ -18,7 +36,21 @@ type Message = {
   prompt?: string;
   thinking?: string;
   thoughtSeconds?: number;
+  /** Position in the stored chat. Missing while a turn is still being written. */
+  pos?: number;
 };
+
+function fromStored(stored: StoredMessage): Message {
+  const role = stored.role === "assistant" ? "assistant" : "user";
+  return { id: stored.id, role, text: stored.text, prompt: stored.prompt, thinking: stored.thinking, thoughtSeconds: stored.thoughtSeconds, pos: stored.pos };
+}
+
+/** Provider errors that mean the request did not fit the model's context window. */
+const CONTEXT_LIMIT_ERROR = /context[\s_-]*(length|window)|too (long|many tokens)|maximum (context|prompt)|prompt is too long|exceeds? .*token/i;
+const CONTEXT_LIMIT_TTL_MS = 15_000;
+
+/** Scroll distance from the top under which the previous page is fetched. */
+const LOAD_OLDER_PX = 240;
 
 type ChatOrigin = { path: string; name: string };
 
@@ -113,17 +145,49 @@ function thoughtLabel(locale: CopilotLocale, seconds?: number) {
   return locale === "zh" ? `思考了 ${seconds} 秒` : `Thought for ${seconds}s`;
 }
 
+/** Stream deltas are merged into the message this often; finished rows below never re-render for them. */
+const STREAM_FLUSH_MS = 100;
+
+/** Marks where the rolling summary takes over: the model no longer sees the messages above it. */
+function SummaryDivider({ summary, open, onToggle, t }: { summary: ContextSummary; open: boolean; onToggle: () => void; t: (key: CopilotStringKey) => string }) {
+  return (
+    <div className="flex flex-col gap-1 text-xs text-muted-foreground" data-summary-covers={summary.coversTo}>
+      <div className="flex items-center gap-2">
+        <span className="h-px flex-1 bg-border" />
+        <span>{t("compressed")}</span>
+        <button type="button" className="rounded px-1 hover:bg-muted hover:text-foreground" onClick={onToggle}>
+          {open ? t("hideSummary") : t("showSummary")}
+        </button>
+        <span className="h-px flex-1 bg-border" />
+      </div>
+      {open ? <div className="whitespace-pre-wrap break-words rounded-md border border-border px-2.5 py-1.5">{summary.text}</div> : null}
+    </div>
+  );
+}
+
+const MessageRow = memo(function MessageRow({ message, live, thinkingLabel }: { message: Message; live: boolean; thinkingLabel: string }) {
+  if (message.role === "user") {
+    return <div className="max-w-[90%] self-end whitespace-pre-wrap break-words rounded-md bg-muted px-2.5 py-1.5">{message.text}</div>;
+  }
+  return (
+    <div className="max-w-[90%] min-w-0 self-start">
+      {message.thinking ? <ThoughtRow label={thinkingLabel} text={message.thinking} live={live} /> : null}
+      {message.text ? <MarkdownText text={message.text} /> : null}
+    </div>
+  );
+});
+
 function ThoughtRow({ label, text, live }: { label: string; text: string; live: boolean }) {
   const [open, setOpen] = useState(false);
   return (
     <div>
-      <button type="button" className="flex items-center gap-1 text-xs text-muted-foreground" onClick={() => setOpen((value) => !value)}>
+      <button type="button" className="flex items-center gap-1 text-sm text-muted-foreground" onClick={() => setOpen((value) => !value)}>
         <svg viewBox="0 0 24 24" className={`size-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
           <path d="M9 6l6 6-6 6" />
         </svg>
         <span className={live ? "animate-pulse" : ""}>{label}</span>
       </button>
-      {open ? <p className="mt-1 whitespace-pre-wrap pl-4 text-xs text-muted-foreground">{text}</p> : null}
+      {open ? <p className="mt-1 whitespace-pre-wrap pl-4 text-sm text-muted-foreground">{text}</p> : null}
     </div>
   );
 }
@@ -137,7 +201,11 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
   const moduleDir = (modulePath?.trim() || (mode === "prep" ? projectPath.trim() : "")).replace(/[\\/]+$/, "");
   const [contextOpen, setContextOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [promptLibrary, setPromptLibrary] = useState<PromptLibrary>(defaultPromptLibrary);
+  const [promptLibrary, setPromptLibrary] = useState<PromptLibrary>(loadPromptLibrary);
+  const updatePromptLibrary = (next: PromptLibrary) => {
+    setPromptLibrary(next);
+    savePromptLibrary(next);
+  };
   const [contextTags, setContextTags] = useState<ContextTag[]>([]);
   const contextCustom = useRef(false);
   const contextSceneId = useRef<string | null>(null);
@@ -164,11 +232,24 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
   const [chatList, setChatList] = useState<ChatSummary[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyRef = useRef<HTMLDivElement>(null);
-  const pendingRef = useRef<{ id: string; title: string; updatedAt: number; messages: Message[]; modulePath: string; moduleName: string; service: string; model: string } | null>(null);
   const touchedRef = useRef(false);
   const [replying, setReplying] = useState(false);
   const threadRef = useRef<HTMLDivElement>(null);
   const requestRef = useRef<string | null>(null);
+  /** Rolling context summary of the open chat, if one exists. */
+  const [summary, setSummary] = useState<ContextSummary | null>(null);
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  /** Paging state for scrolling back through the transcript. */
+  const [hasOlder, setHasOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const olderBusy = useRef(false);
+  /** Set before a page is prepended; the layout effect keeps the viewport on the same message. */
+  const prependAnchor = useRef<{ height: number; top: number } | null>(null);
+  const skipAutoScroll = useRef(false);
+  const messagesRef = useRef<Message[]>([]);
+  messagesRef.current = messages;
+  const chatIdRef = useRef<string | null>(null);
+  chatIdRef.current = chatId;
 
   useEffect(() => {
     let alive = true;
@@ -241,8 +322,7 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
     const requestId = requestRef.current;
     if (requestId) void stopChat(requestId);
     touchedRef.current = false;
-    flushChat();
-    setMessages([]);
+    resetThread();
     setChatId(null);
     setChatOrigin(null);
     setHistoryOpen(false);
@@ -260,17 +340,13 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
       const lastId = await loadModuleChat(moduleDir).catch(() => null);
       if (!alive || touchedRef.current) return;
       if (lastId) {
-        try {
-          const chat = await loadChat(lastId);
-          if (!alive || touchedRef.current) return;
-          setChatId(chat.id);
-          setMessages(chat.messages);
-          setChatOrigin(originFrom(chat.modulePath, chat.moduleName));
-          restoreModel(chat.service, chat.model, chat.messages.length > 0);
+        const chat = await openChatRecord(lastId).catch(() => null);
+        if (!alive || touchedRef.current) return;
+        if (chat) {
+          showChat(chat);
           return;
-        } catch {
-          /* The module remembered a chat that is no longer on this machine. */
         }
+        /* The module remembered a chat that is no longer on this machine. */
       }
       if (!alive || touchedRef.current) return;
       setChatId(crypto.randomUUID());
@@ -290,34 +366,101 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
     if (hasMessages) setSelection(null);
   }
 
-  function flushChat() {
-    const snapshot = pendingRef.current;
-    if (!snapshot) return;
-    pendingRef.current = null;
-    void saveChat(snapshot).then(() =>
-      setChatList((current) => [
-        { id: snapshot.id, title: snapshot.title, updatedAt: snapshot.updatedAt },
-        ...current.filter((item) => item.id !== snapshot.id),
-      ]),
-    );
+  /** Clear the transcript and its paging/summary state. */
+  function resetThread() {
+    setMessages([]);
+    setSummary(null);
+    setSummaryOpen(false);
+    setHasOlder(false);
+    setLoadingOlder(false);
+    olderBusy.current = false;
+    prependAnchor.current = null;
   }
 
-  useEffect(() => {
-    if (!chatId || messages.length === 0) return;
-    const title = chatTitle(messages, copilotT(locale, "newChat"));
-    pendingRef.current = {
-      id: chatId,
-      title,
-      updatedAt: Date.now(),
-      messages,
+  /** Show a stored chat: its newest page, summary, origin and remembered model. */
+  function showChat(chat: ChatOpen) {
+    const page = chat.messages.map(fromStored);
+    setChatId(chat.id);
+    setMessages(page);
+    setSummary(chat.summary);
+    setSummaryOpen(false);
+    setHasOlder((page[0]?.pos ?? 0) > 0);
+    setLoadingOlder(false);
+    olderBusy.current = false;
+    setChatOrigin(originFrom(chat.modulePath, chat.moduleName));
+    restoreModel(chat.service, chat.model, chat.total > 0);
+  }
+
+  /** Chat-level fields that travel with every stored turn. */
+  function chatMeta(id: string, history: Message[], chosen: Selection | null): ChatMeta {
+    return {
+      id,
+      title: chatTitle(history, copilotT(locale, "newChat")),
       modulePath: chatOrigin?.path ?? "",
       moduleName: chatOrigin?.name ?? "",
-      service: (remembered ?? selection)?.service ?? "",
-      model: (remembered ?? selection)?.model ?? "",
+      service: chosen?.service ?? "",
+      model: chosen?.model ?? "",
     };
-    const handle = window.setTimeout(flushChat, 300);
-    return () => window.clearTimeout(handle);
-  }, [chatId, messages, locale, chatOrigin, selection, remembered]);
+  }
+
+  /** Store one turn, stamp its position on the shown message, and move the chat to the top of the list. */
+  async function persist(meta: ChatMeta, message: Message) {
+    try {
+      const pos = await appendMessage(meta, { id: message.id, role: message.role, text: message.text, prompt: message.prompt, thinking: message.thinking, thoughtSeconds: message.thoughtSeconds });
+      setMessages((current) => current.map((item) => (item.id === message.id ? { ...item, pos } : item)));
+      setChatList((current) => [{ id: meta.id, title: meta.title, updatedAt: Date.now() }, ...current.filter((item) => item.id !== meta.id)]);
+    } catch (error) {
+      console.error("[ek.copilot] storing a message failed", error);
+    }
+  }
+
+  /** Fetch the page before the oldest shown message and prepend it without moving the viewport. */
+  function loadOlder() {
+    const first = messagesRef.current[0];
+    if (!chatId || olderBusy.current || first?.pos == null || first.pos <= 0) return;
+    olderBusy.current = true;
+    setLoadingOlder(true);
+    const id = chatId;
+    void olderMessages(id, first.pos)
+      .then((page) => {
+        if (chatIdRef.current !== id) return;
+        const thread = threadRef.current;
+        if (thread) prependAnchor.current = { height: thread.scrollHeight, top: thread.scrollTop };
+        skipAutoScroll.current = true;
+        const older = page.map(fromStored);
+        setMessages((current) => [...older, ...current]);
+        setHasOlder((older[0]?.pos ?? 0) > 0);
+      })
+      .catch((error: unknown) => console.error("[ek.copilot] loading earlier messages failed", error))
+      .finally(() => {
+        olderBusy.current = false;
+        setLoadingOlder(false);
+      });
+  }
+
+  useLayoutEffect(() => {
+    const anchor = prependAnchor.current;
+    const thread = threadRef.current;
+    if (!anchor || !thread) return;
+    prependAnchor.current = null;
+    thread.scrollTop = anchor.top + (thread.scrollHeight - anchor.height);
+  }, [messages]);
+
+  useEffect(() => {
+    let alive = true;
+    let unlisten = () => {};
+    void listen<{ chatId: string; coversTo: number; text: string }>("copilot-summary", (event) => {
+      if (event.payload.chatId !== chatIdRef.current) return;
+      setSummary({ coversTo: event.payload.coversTo, text: event.payload.text });
+    }).then((stop) => {
+      if (alive) unlisten = stop;
+      else stop();
+    });
+    return () => {
+      alive = false;
+      unlisten();
+    };
+  }, []);
 
   useEffect(() => {
     if (!remembered || providers.length === 0) return;
@@ -337,14 +480,6 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
     void saveModuleChat(moduleDir, chatId);
   }, [moduleDir, chatId]);
 
-  useEffect(() => {
-    const onHide = () => {
-      const snapshot = pendingRef.current;
-      if (snapshot) void saveChat(snapshot);
-    };
-    window.addEventListener("pagehide", onHide);
-    return () => window.removeEventListener("pagehide", onHide);
-  }, []);
 
   useEffect(() => {
     if (!historyOpen) return;
@@ -357,6 +492,10 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
   }, [historyOpen]);
 
   useEffect(() => {
+    if (skipAutoScroll.current) {
+      skipAutoScroll.current = false;
+      return;
+    }
     const thread = threadRef.current;
     if (thread) thread.scrollTop = thread.scrollHeight;
   }, [messages, replying]);
@@ -489,11 +628,16 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
     const history = [...messages, user];
     setMessages(history);
     clearComposer();
+    const id = chatId ?? crypto.randomUUID();
+    if (!chatId) setChatId(id);
     if (!selection) {
+      // Stored without a prompt; the notice itself is not part of the transcript.
+      void persist(chatMeta(id, history, remembered), user);
       setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", text: t("pickModel") }]);
       return;
     }
     const chosen = selection;
+    const meta = chatMeta(id, history, chosen);
     const requestId = crypto.randomUUID();
     const assistantId = crypto.randomUUID();
     requestRef.current = requestId;
@@ -507,46 +651,78 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
       thoughtSeconds = Math.max(1, Math.round((Date.now() - thoughtStart) / 1000));
       thoughtStart = null;
     };
+    // Deltas pile up here and reach React in one update per STREAM_FLUSH_MS.
+    const pending = { thinking: "", text: "" };
+    /** Everything the model thought, for the stored turn. */
+    let thinkingAll = "";
+    let flushTimer = 0;
+    const flushDeltas = () => {
+      window.clearTimeout(flushTimer);
+      flushTimer = 0;
+      const thinking = pending.thinking;
+      const text = pending.text;
+      pending.thinking = "";
+      pending.text = "";
+      if (!thinking && !text) return;
+      const seconds = thoughtSeconds;
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantId
+            ? {
+                ...message,
+                thinking: thinking ? `${message.thinking ?? ""}${thinking}` : message.thinking,
+                text: message.text + text,
+                thoughtSeconds: text ? (seconds ?? message.thoughtSeconds) : message.thoughtSeconds,
+              }
+            : message,
+        ),
+      );
+    };
+    const queueFlush = () => {
+      if (!flushTimer) flushTimer = window.setTimeout(flushDeltas, STREAM_FLUSH_MS);
+    };
     void listen<{ requestId: string; kind?: string; delta: string }>("copilot-stream", (event) => {
       if (!gate.open || event.payload.requestId !== requestId || !event.payload.delta) return;
       const kind = event.payload.kind ?? "text";
       if (kind === "thinking") {
         if (thoughtStart == null) thoughtStart = Date.now();
-        setMessages((current) => current.map((message) => (message.id === assistantId ? { ...message, thinking: `${message.thinking ?? ""}${event.payload.delta}` } : message)));
+        pending.thinking += event.payload.delta;
+        thinkingAll += event.payload.delta;
+        queueFlush();
         return;
       }
       freezeThought();
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === assistantId ? { ...message, text: message.text + event.payload.delta, thoughtSeconds: thoughtSeconds ?? message.thoughtSeconds } : message,
-        ),
-      );
+      pending.text += event.payload.delta;
+      queueFlush();
     }).then(async (unlisten) => {
       try {
         const source = await loadModuleData?.("ek.scenario");
         const prompt = await contextMessage(source, moduleDir, tags, asked, template);
         setMessages((current) => current.map((message) => (message.id === userId ? { ...message, prompt } : message)));
-        const reply = await completeChat({
-          requestId,
-          service: chosen.service,
-          model: chosen.model,
-          messages: history.map((message, index) => ({
-            role: message.role,
-            text: index === history.length - 1 ? prompt : message.text,
-          })),
-        });
+        // The user turn must be stored before the call: Rust builds the context from the chat.
+        await persist(meta, { ...user, prompt });
+        const reply = await completeChat({ requestId, chatId: id, service: chosen.service, model: chosen.model });
         gate.open = false;
         freezeThought();
+        flushDeltas();
+        const kept = reply.trim() !== "" || thinkingAll !== "";
         setMessages((current) => {
-          const message = current.find((item) => item.id === assistantId);
-          if (!reply.trim() && !message?.thinking) return current.filter((item) => item.id !== assistantId);
+          if (!kept) return current.filter((item) => item.id !== assistantId);
           return current.map((item) => (item.id === assistantId ? { ...item, text: reply, thoughtSeconds: thoughtSeconds ?? item.thoughtSeconds } : item));
         });
+        if (kept) {
+          void persist(meta, { id: assistantId, role: "assistant", text: reply, thinking: thinkingAll || undefined, thoughtSeconds });
+        }
       } catch (error: unknown) {
         gate.open = false;
         freezeThought();
-        const code = String(error);
-        const text = code.includes("no-key") ? t("noKey") : code.includes("no-model") ? t("pickModel") : t("callFailed");
+        flushDeltas();
+        const { code, detail } = failureParts(error);
+        if (CONTEXT_LIMIT_ERROR.test(detail)) {
+          reportStatus({ key: `ek.copilot.context.${id}`, level: "error", text: t("contextTooLong"), detail, ttlMs: CONTEXT_LIMIT_TTL_MS });
+        }
+        const summary = code.includes("no-key") ? t("noKey") : code.includes("no-model") ? t("pickModel") : t("callFailed");
+        const text = detail ? `${summary}\n\n${code}: ${detail}` : summary;
         setMessages((current) => current.map((message) => (message.id === assistantId && message.text === "" && !message.thinking ? { ...message, text } : message)));
       } finally {
         gate.open = false;
@@ -560,9 +736,8 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
   function startNewChat() {
     if (replying) return;
     touchedRef.current = true;
-    flushChat();
     setHistoryOpen(false);
-    setMessages([]);
+    resetThread();
     setChatOrigin(originFrom(moduleDir, moduleName));
     setChatId(crypto.randomUUID());
   }
@@ -572,14 +747,12 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
       setHistoryOpen(false);
       return;
     }
-    flushChat();
-    void loadChat(id).then((chat) => {
-      setChatId(chat.id);
-      setMessages(chat.messages);
-      setChatOrigin(originFrom(chat.modulePath, chat.moduleName));
-      restoreModel(chat.service, chat.model, chat.messages.length > 0);
-      setHistoryOpen(false);
-    });
+    void openChatRecord(id)
+      .then((chat) => {
+        if (chat) showChat(chat);
+        setHistoryOpen(false);
+      })
+      .catch((error: unknown) => console.error("[ek.copilot] opening a chat failed", error));
   }
 
   function stop() {
@@ -593,15 +766,15 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
   const mentionActive = Math.min(mentionIndex, Math.max(mentionItems.length - 1, 0));
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background text-[13px] text-foreground">
+    <div className="flex h-full min-h-0 flex-col bg-background text-sm text-foreground">
       <div className="flex shrink-0 items-center justify-end gap-1 px-2 py-1">
-        <button type="button" disabled={replying} className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40" onClick={startNewChat}>
+        <button type="button" disabled={replying} className="rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40" onClick={startNewChat}>
           {t("newChat")}
         </button>
         <div ref={historyRef} className="relative">
           <button
             type="button"
-            className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+            className="rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
             aria-expanded={historyOpen}
             onClick={() => setHistoryOpen((open) => !open)}
           >
@@ -614,7 +787,7 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
                 {chatList.map((chat) => (
                   <button key={chat.id} type="button" className={`flex h-8 w-full items-center gap-3 px-3 text-left hover:bg-muted ${chat.id === chatId ? "bg-muted" : ""}`} onClick={() => openHistoryChat(chat.id)}>
                     <span className="min-w-0 flex-1 truncate">{chat.title || t("newChat")}</span>
-                    <span className="shrink-0 text-xs text-muted-foreground">{chatStamp(chat.updatedAt)}</span>
+                    <span className="shrink-0 text-sm text-muted-foreground">{chatStamp(chat.updatedAt)}</span>
                   </button>
                 ))}
               </div>
@@ -622,31 +795,27 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
           ) : null}
         </div>
       </div>
-      <div ref={threadRef} className="min-h-0 flex-1 overflow-auto px-3 py-3">
+      <div
+        ref={threadRef}
+        className="min-h-0 flex-1 overflow-auto px-3 py-3"
+        onScroll={(event) => {
+          if (hasOlder && event.currentTarget.scrollTop < LOAD_OLDER_PX) loadOlder();
+        }}
+      >
         {messages.length === 0 ? <p className="text-muted-foreground">{t("emptyChat")}</p> : null}
+        {loadingOlder ? <p className="pb-2 text-center text-xs text-muted-foreground">{t("loadingOlder")}</p> : null}
         <div className="flex flex-col gap-3">
-          {messages.map((message) =>
-            message.role === "user" ? (
-              <div key={message.id} className="max-w-[90%] self-end whitespace-pre-wrap break-words rounded-md bg-muted px-2.5 py-1.5">
-                {message.text}
-              </div>
-            ) : (
-              <div key={message.id} className="max-w-[90%] min-w-0 self-start">
-                {message.thinking ? (
-                  <ThoughtRow
-                    label={replying && message.id === messages.at(-1)?.id && message.thoughtSeconds == null ? t("thinking") : thoughtLabel(locale, message.thoughtSeconds)}
-                    text={message.thinking}
-                    live={replying && message.id === messages.at(-1)?.id && message.thoughtSeconds == null}
-                  />
-                ) : null}
-                {message.text ? <MarkdownText text={message.text} /> : null}
-              </div>
-            ),
-          )}
+          {summary && messages[0]?.pos === summary.coversTo + 1 ? <SummaryDivider summary={summary} open={summaryOpen} onToggle={() => setSummaryOpen((open) => !open)} t={t} /> : null}
+          {messages.map((message) => {
+            const live = replying && message.id === messages.at(-1)?.id && message.thoughtSeconds == null;
+            const row = <MessageRow key={message.id} message={message} live={live} thinkingLabel={live ? t("thinking") : thoughtLabel(locale, message.thoughtSeconds)} />;
+            if (!summary || message.pos !== summary.coversTo) return row;
+            return [row, <SummaryDivider key={`summary-${summary.coversTo}`} summary={summary} open={summaryOpen} onToggle={() => setSummaryOpen((open) => !open)} t={t} />];
+          })}
           {replying && messages.at(-1)?.text === "" && !messages.at(-1)?.thinking ? <p className="text-muted-foreground">{t("sending")}</p> : null}
         </div>
       </div>
-      {foreignModule ? <p className="shrink-0 border-t border-border px-3 py-2 text-xs leading-5 text-destructive">{t("crossModule").replaceAll("{name}", foreignModule)}</p> : null}
+      {foreignModule ? <p className="shrink-0 border-t border-border px-3 py-2 text-sm leading-5 text-destructive">{t("crossModule").replaceAll("{name}", foreignModule)}</p> : null}
       <form
         className="flex shrink-0 flex-col gap-2 border-t border-border p-2"
         onSubmit={(event) => {
@@ -715,7 +884,7 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
           </div>
           <div className="flex items-center justify-end gap-2">
           <div ref={menuRef} className="relative shrink-0">
-            <button type="button" aria-label={t("model")} aria-expanded={menuOpen} className="flex h-7 max-w-36 items-center gap-1 text-xs text-muted-foreground" onClick={() => setMenuOpen((open) => !open)}>
+            <button type="button" aria-label={t("model")} aria-expanded={menuOpen} className="flex h-7 max-w-36 items-center gap-1 text-sm text-muted-foreground" onClick={() => setMenuOpen((open) => !open)}>
               <span className="truncate">{selection?.model ?? t("model")}</span>
               <svg viewBox="0 0 24 24" className="size-3 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                 <path d="M6 9l6 6 6-6" />
@@ -821,9 +990,9 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
       {advancedOpen ? (
         <PromptTemplateDialog
           library={promptLibrary}
-          onApply={setPromptLibrary}
+          onApply={updatePromptLibrary}
           onConfirm={(next) => {
-            setPromptLibrary(next);
+            updatePromptLibrary(next);
             setAdvancedOpen(false);
           }}
           onClose={() => setAdvancedOpen(false)}
