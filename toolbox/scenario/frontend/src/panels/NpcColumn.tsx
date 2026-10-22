@@ -1,13 +1,14 @@
+import { savePastedImage, useProjectImage } from "@ek/tool-api";
 import { DicesIcon, Filter, ImagePlus, Plus, User, X } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { applyActorArticles, publishActorIndex, publishArticles, readArticles, subscribeArticles } from "../articleStore";
 import { derive, rollCharacteristics, type Characteristics, type Derived } from "../cocSheet";
 import {
   ensureScenarioSchema,
   insertScenarioActor,
+  loadScenarioActor,
   loadScenarioActors,
   deleteScenarioActor,
-  loadScenarioArticles,
   projectDatabaseAvailable,
   setActorArticles,
   setScenarioActorTrashed,
@@ -20,13 +21,14 @@ import { scenarioT, type ScenarioLocale, type ScenarioStringKey } from "../i18n"
 import { ListTrash } from "./ListTrash";
 import { deleteRecordActor, ensureRecordSchema, insertRecordMonster, loadRecordActors, loadRecordMonsters, saveRecordActor, saveRecordMonster, type RecordActorVitals, type RecordMonster } from "../play/recordDb";
 import { presentSceneIds, readSceneCatalog, sceneLinkRows, subscribeSceneCatalog, type SceneCatalog } from "../sceneLinks";
-import { loadImageObjectUrl, savePastedImage } from "../storage";
+import { clearWriteError, reportWriteError } from "../writeStatus";
 
 type Kind = "npc" | "monster";
 
 type Actor = ScenarioActor;
 
-type Draft = { kind: Kind; actor: Actor | null };
+/** `key` stays fixed while the dialog is open, so applying a new actor does not remount it. */
+type Draft = { kind: Kind; actor: Actor | null; key: string };
 
 const STAT_KEYS = ["str", "con", "siz", "dex", "app", "int", "pow", "edu", "luck"] as const;
 const ATTRIBUTE_KEYS = ["str", "con", "siz", "dex", "app", "int", "pow", "edu"] as const;
@@ -140,7 +142,7 @@ export function NpcColumn({
     if (detail.mode === "edit" && editable) {
       setSheet(null);
       setMonsterId(null);
-      setDraft({ kind: actor.kind, actor });
+      setDraft({ kind: actor.kind, actor, key: actor.id });
     }
   }), [actors, editable]);
 
@@ -156,26 +158,45 @@ export function NpcColumn({
 
   function openForm(kind: Kind) {
     setMenu(null);
-    setDraft({ kind, actor: null });
+    setDraft({ kind, actor: null, key: `new-${crypto.randomUUID()}` });
   }
 
-  async function save(actor: Actor, articleIds: string[]) {
-    if (!editable || projectPath === "") return;
-    if (usingDb) {
-      await ensureScenarioSchema(projectPath);
-      if (draft?.actor) await updateScenarioActor(projectPath, actor);
-      else await insertScenarioActor(projectPath, actor);
-      await setActorArticles(projectPath, actor.id, articleIds);
-      setActors(await loadScenarioActors(projectPath));
-      publishArticles(await loadScenarioArticles(projectPath));
-    } else if (draft?.actor) {
-      setActors((items) => items.map((item) => (item.id === actor.id ? actor : item)));
-      publishArticles(applyActorArticles(readArticles(), actor.id, articleIds));
-    } else {
-      setActors((items) => [...items, actor]);
-      publishArticles(applyActorArticles(readArticles(), actor.id, articleIds));
+  /**
+   * Run one database write and report a failure in the host status bar. The list state is only
+   * touched after the write succeeded, so a failed write leaves the UI as it was.
+   */
+  async function writeActor<T>(id: string, name: string | undefined, work: () => Promise<T>): Promise<T | undefined> {
+    const key = `actor.${id}`;
+    try {
+      const result = await work();
+      clearWriteError(key);
+      return result;
+    } catch (error) {
+      reportWriteError(key, `${t("actorWriteFailed")} · ${name || actors.find((item) => item.id === id)?.name || id}`, error);
+      return undefined;
     }
-    setDraft(null);
+  }
+
+  async function save(actor: Actor, articleIds: string[], close: boolean) {
+    if (!editable || projectPath === "") return;
+    const existing = !!draft?.actor;
+    let saved: Actor = actor;
+    if (usingDb) {
+      const stored = await writeActor(actor.id, actor.name, async () => {
+        await ensureScenarioSchema(projectPath);
+        if (existing) await updateScenarioActor(projectPath, actor);
+        else await insertScenarioActor(projectPath, actor);
+        await setActorArticles(projectPath, actor.id, articleIds);
+        // Only this actor is read back: an insert gets its `position` from SQL.
+        return loadScenarioActor(projectPath, actor.id);
+      });
+      if (stored === undefined) return;
+      saved = stored ?? actor;
+    }
+    if (existing) setActors((items) => items.map((item) => (item.id === saved.id ? saved : item)));
+    else setActors((items) => [...items, saved]);
+    publishArticles(applyActorArticles(readArticles(), saved.id, articleIds));
+    setDraft((current) => (close || !current ? null : { ...current, actor: saved }));
   }
 
   async function moveActor(id: string, trashed: boolean) {
@@ -183,11 +204,10 @@ export function NpcColumn({
     if (!editable || projectPath === "") return;
     if (trashed) setTrashOpen(true);
     if (usingDb) {
-      await setScenarioActorTrashed(projectPath, id, trashed);
-      setActors(await loadScenarioActors(projectPath));
-    } else {
-      setActors((items) => items.map((item) => (item.id === id ? { ...item, trashed } : item)));
+      const done = await writeActor(id, undefined, () => setScenarioActorTrashed(projectPath, id, trashed).then(() => true));
+      if (!done) return;
     }
+    setActors((items) => items.map((item) => (item.id === id ? { ...item, trashed } : item)));
   }
 
   function npcVitals(actor: Actor): RecordActorVitals {
@@ -241,15 +261,13 @@ export function NpcColumn({
   async function purgeActor(id: string) {
     setRowMenu(null);
     if (!editable || projectPath === "") return;
-    if (draft?.actor?.id === id) setDraft(null);
     if (usingDb) {
-      await deleteScenarioActor(projectPath, id);
-      setActors(await loadScenarioActors(projectPath));
-      publishArticles(await loadScenarioArticles(projectPath));
-    } else {
-      setActors((items) => items.filter((item) => item.id !== id));
-      publishArticles(readArticles().map((item) => ({ ...item, actors: item.actors.filter((actorId) => actorId !== id) })));
+      const done = await writeActor(id, undefined, () => deleteScenarioActor(projectPath, id).then(() => true));
+      if (!done) return;
     }
+    if (draft?.actor?.id === id) setDraft(null);
+    setActors((items) => items.filter((item) => item.id !== id));
+    publishArticles(readArticles().map((item) => ({ ...item, actors: item.actors.filter((actorId) => actorId !== id) })));
   }
 
   function renderActor(actor: Actor) {
@@ -285,7 +303,7 @@ export function NpcColumn({
         onDoubleClick={() => {
           if (!editable) return;
           setPicked(actor.id);
-          setDraft({ kind: actor.kind, actor });
+          setDraft({ kind: actor.kind, actor, key: actor.id });
         }}
         onContextMenu={(event) => {
           if (!editable) {
@@ -299,7 +317,7 @@ export function NpcColumn({
         {actor.portrait ? <StoredPortrait projectPath={projectPath} src={actor.portrait} className="size-6 shrink-0 rounded-full object-cover" /> : null}
         <span className="min-w-0 flex-1 truncate">{actor.name}</span>
         <span className="flex w-16 shrink-0 items-center justify-end gap-1.5">
-          <span className="w-8 text-right text-[11px] text-muted-foreground">{actor.kind === "npc" ? "NPC" : t("monster")}</span>
+          <span className="w-8 text-right text-xs text-muted-foreground">{actor.kind === "npc" ? "NPC" : t("monster")}</span>
           <span className="grid size-5 place-items-center">
             {!editable && actor.kind === "npc" && <NpcMark actor={actor} row={recordActors.find((row) => row.actorId === actor.id)} label={t} onActivate={() => void activateNpc(actor)} />}
             {!editable && actor.kind === "monster" && (
@@ -325,7 +343,7 @@ export function NpcColumn({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border bg-card px-2.5 text-xs font-semibold">
+      <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border bg-card px-2.5 text-base font-semibold">
         <span className="min-w-0 flex-1 truncate">{t("npcs")}</span>
         <button
           type="button"
@@ -398,7 +416,7 @@ export function NpcColumn({
       {menu && (
         <div
           data-npc-menu=""
-          className="fixed z-30 min-w-36 -translate-x-full rounded-md border border-border bg-popover py-1 text-[13px] text-popover-foreground shadow-md"
+          className="fixed z-30 min-w-36 -translate-x-full rounded-md border border-border bg-popover py-1 text-sm text-popover-foreground shadow-md"
           style={{ left: menu.x, top: menu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
@@ -413,7 +431,7 @@ export function NpcColumn({
       {rowMenu && (
         <div
           data-actor-menu=""
-          className="fixed z-30 min-w-36 rounded-md border border-border bg-popover py-1 text-[13px] text-popover-foreground shadow-md"
+          className="fixed z-30 min-w-36 rounded-md border border-border bg-popover py-1 text-sm text-popover-foreground shadow-md"
           style={{ left: rowMenu.x, top: rowMenu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
@@ -453,7 +471,7 @@ export function NpcColumn({
       })()}
       {editable && draft && (
         <ActorDialog
-          key={draft.actor?.id ?? `new-${draft.kind}`}
+          key={draft.key}
           locale={locale}
           projectPath={projectPath}
           kind={draft.kind}
@@ -462,7 +480,7 @@ export function NpcColumn({
           titleId={titleId}
           editable={editable}
           onCancel={() => setDraft(null)}
-          onSave={(actor, articleIds) => void save(actor, articleIds)}
+          onSave={(actor, articleIds, close) => void save(actor, articleIds, close)}
         />
       )}
     </div>
@@ -543,17 +561,17 @@ function ReadOnlyActorSheet({
         role="dialog"
         aria-labelledby={titleId}
         data-actor-sheet={actor.kind}
-        className="relative flex max-h-full w-[min(660px,100%)] flex-col rounded-md border border-border bg-background text-[13px] shadow-lg"
+        className="relative flex max-h-full w-[min(660px,100%)] flex-col rounded-md border border-border bg-background text-sm shadow-lg"
         onPointerDown={(event) => event.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-end gap-2 border-b border-border px-3 py-2">
           {onActivate && (
-            <button type="button" className="rounded-md bg-primary px-3 py-1 text-sm text-primary-foreground" onClick={onActivate}>
+            <button type="button" className="rounded-md bg-primary px-3 py-1 text-base text-primary-foreground" onClick={onActivate}>
               {t("activateNpc")}
             </button>
           )}
           {onReset && (
-            <button type="button" className="rounded-md bg-primary px-3 py-1 text-sm text-primary-foreground" onClick={() => setConfirmReset(true)}>
+            <button type="button" className="rounded-md bg-primary px-3 py-1 text-base text-primary-foreground" onClick={() => setConfirmReset(true)}>
               {t("reset")}
             </button>
           )}
@@ -630,8 +648,8 @@ function ReadOnlyActorSheet({
           <Prose label={t("notes")} value={actor.notes} />
         </div>
         <div className="mt-4 border-t border-border pt-3">
-          <div className="text-[14px] text-muted-foreground">{t("clues")}</div>
-          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[16px]">
+          <div className="text-base text-muted-foreground">{t("clues")}</div>
+          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-base">
             {linkedArticles.length === 0 ? <span>—</span> : linkedArticles.map((item) => (
               <span
                 key={item.id}
@@ -650,17 +668,17 @@ function ReadOnlyActorSheet({
           </div>
         </div>
         <div className="mt-4 border-t border-border pt-3">
-          <div className="text-[14px] text-muted-foreground">{t("skills")}</div>
-          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[16px]">
+          <div className="text-base text-muted-foreground">{t("skills")}</div>
+          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-base">
             {actor.skills.length === 0 ? <span>—</span> : actor.skills.map((skill, index) => (
               <span key={`${skill.name}-${index}`}>{skill.name} {skill.value}</span>
             ))}
           </div>
         </div>
         <div className="mt-4 border-t border-border pt-3">
-          <div className="text-[14px] text-muted-foreground">{t("weapons")}</div>
+          <div className="text-base text-muted-foreground">{t("weapons")}</div>
           <div className="mt-1 space-y-2">
-            {actor.attacks.length === 0 ? <span className="text-[16px]">—</span> : actor.attacks.map((attack, index) => (
+            {actor.attacks.length === 0 ? <span className="text-base">—</span> : actor.attacks.map((attack, index) => (
               <div key={`${attack.name}-${index}`} className="flex flex-wrap gap-x-4 gap-y-1">
                 <Fact label={t("weaponName")} value={attack.name} />
                 <Fact label={t("skillValue")} value={String(attack.chance)} />
@@ -674,7 +692,7 @@ function ReadOnlyActorSheet({
         )}
         </div>
         {confirmReset && onReset && (
-          <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-6" onPointerDown={() => setConfirmReset(false)}>
+          <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-6">
             <div
               role="alertdialog"
               aria-labelledby={confirmId}
@@ -682,8 +700,8 @@ function ReadOnlyActorSheet({
               className="w-[min(360px,100%)] rounded-md border border-border bg-background p-4 shadow-lg"
               onPointerDown={(event) => event.stopPropagation()}
             >
-              <h2 id={confirmId} className="text-sm font-semibold">{t("reset")}</h2>
-              <p className="mt-2 text-[13px]">{t("resetStateAsk")}</p>
+              <h2 id={confirmId} className="text-base font-semibold">{t("reset")}</h2>
+              <p className="mt-2 text-sm">{t("resetStateAsk")}</p>
               <div className="mt-4 flex justify-end gap-2">
                 <button type="button" className="rounded-md px-3 py-1 hover:bg-muted" onClick={() => setConfirmReset(false)}>
                   {t("cancel")}
@@ -704,7 +722,7 @@ function ReadOnlyActorSheet({
         )}
         {tip && (
           <div
-            className="pointer-events-none fixed z-50 w-56 rounded-md border border-border bg-popover px-2 py-1 text-[14px] whitespace-pre-wrap text-popover-foreground shadow-md"
+            className="pointer-events-none fixed z-50 w-56 rounded-md border border-border bg-popover px-2 py-1 text-base whitespace-pre-wrap text-popover-foreground shadow-md"
             style={{ left: tip.x, top: tip.y }}
           >
             {tip.text.trim() ? tip.text : "—"}
@@ -750,9 +768,9 @@ function MonsterSheetBody({
         <Fact label={t("mov")} value={String(actor.derived.mov)} />
       </div>
       <div className="mt-4 border-t border-border pt-3">
-        <div className="text-[14px] text-muted-foreground">{t("weapons")}</div>
+        <div className="text-base text-muted-foreground">{t("weapons")}</div>
         <div className="mt-1 space-y-2">
-          {actor.attacks.length === 0 ? <span className="text-[16px]">—</span> : actor.attacks.map((attack, index) => (
+          {actor.attacks.length === 0 ? <span className="text-base">—</span> : actor.attacks.map((attack, index) => (
             <div key={`${attack.name}-${index}`} className="flex flex-wrap gap-x-4 gap-y-1">
               <Fact label={t("weaponName")} value={attack.name} />
               <Fact label={t("skillValue")} value={String(attack.chance)} />
@@ -763,8 +781,8 @@ function MonsterSheetBody({
         </div>
       </div>
       <div className="mt-4 border-t border-border pt-3">
-        <div className="text-[14px] text-muted-foreground">{t("clues")}</div>
-        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[16px]">
+        <div className="text-base text-muted-foreground">{t("clues")}</div>
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-base">
           {articles.length === 0 ? <span>—</span> : articles.map((item) => (
             <span
               key={item.id}
@@ -790,6 +808,8 @@ function MonsterSheetBody({
   );
 }
 
+const VITAL_COMMIT_MS = 400;
+
 function Vital({
   label,
   value,
@@ -803,30 +823,66 @@ function Vital({
   onChange: (value: string) => void;
   onCommit: (value: string) => void;
 }) {
+  // Typing commits after a pause; the spinner arrows, Enter, and blur commit at once.
+  const commitRef = useRef(onCommit);
+  commitRef.current = onCommit;
+  const pending = useRef<string | null>(null);
+  const timer = useRef<number | null>(null);
+
+  function flush() {
+    if (timer.current !== null) {
+      window.clearTimeout(timer.current);
+      timer.current = null;
+    }
+    const next = pending.current;
+    pending.current = null;
+    if (next !== null) commitRef.current(next);
+  }
+
+  function commitLater(raw: string) {
+    pending.current = raw;
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(flush, VITAL_COMMIT_MS);
+  }
+
+  function commitNow(raw: string) {
+    pending.current = raw;
+    flush();
+  }
+
+  useEffect(() => flush, []);
+
   return (
     <span className="inline-flex items-baseline gap-1 whitespace-nowrap">
-      <span className="shrink-0 text-[14px] text-muted-foreground">{label}</span>
+      <span className="shrink-0 text-base text-muted-foreground">{label}</span>
       {editable ? (
         <input
           type="number"
           min={0}
           step={1}
           value={value}
-          className="w-12 max-w-12 shrink border-b border-border bg-transparent text-[16px] outline-none"
+          className="w-12 max-w-12 shrink border-b border-border bg-transparent text-base outline-none"
           onChange={(event) => {
             const raw = event.target.value;
             if (raw !== "" && !/^\d+$/.test(raw)) return;
             onChange(raw);
-            if (/^\d+$/.test(raw)) onCommit(raw);
+            if (!/^\d+$/.test(raw)) return;
+            // Keyboard edits carry an inputType; the spinner arrows and arrow keys do not.
+            const typed = typeof (event.nativeEvent as Partial<InputEvent>).inputType === "string";
+            if (typed) commitLater(raw);
+            else commitNow(raw);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") event.currentTarget.blur();
           }}
           onBlur={(event) => {
             const next = event.target.value.trim() === "" ? "0" : String(wholeAtLeastZero(event.target.value));
             onChange(next);
-            onCommit(next);
+            commitNow(next);
           }}
         />
       ) : (
-        <span className="text-[16px]">{value.trim() ? value : "—"}</span>
+        <span className="text-base">{value.trim() ? value : "—"}</span>
       )}
     </span>
   );
@@ -864,8 +920,8 @@ function NpcMark({
 function Fact({ label, value }: { label: string; value: string }) {
   return (
     <span className="inline-flex min-w-0 items-baseline gap-1">
-      <span className="text-[14px] text-muted-foreground">{label}</span>
-      <span className="text-[16px]">{value.trim() ? value : "—"}</span>
+      <span className="text-base text-muted-foreground">{label}</span>
+      <span className="text-base">{value.trim() ? value : "—"}</span>
     </span>
   );
 }
@@ -873,8 +929,8 @@ function Fact({ label, value }: { label: string; value: string }) {
 function Prose({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-[14px] text-muted-foreground">{label}</div>
-      <p className="mt-0.5 whitespace-pre-wrap text-[14px]">{value.trim() ? value : "—"}</p>
+      <div className="text-base text-muted-foreground">{label}</div>
+      <p className="mt-0.5 whitespace-pre-wrap text-base">{value.trim() ? value : "—"}</p>
     </div>
   );
 }
@@ -898,7 +954,7 @@ function ActorDialog({
   titleId: string;
   editable: boolean;
   onCancel: () => void;
-  onSave: (actor: Actor, articleIds: string[]) => void | Promise<void>;
+  onSave: (actor: Actor, articleIds: string[], close: boolean) => void | Promise<void>;
 }) {
   const t = (key: ScenarioStringKey) => scenarioT(locale, key);
   const [name, setName] = useState(actor?.name ?? "");
@@ -920,6 +976,9 @@ function ActorDialog({
   const [articles, setArticles] = useState<ScenarioArticle[]>(readArticles);
   const [articleIds, setArticleIds] = useState<string[]>(() => (actor ? readArticles().filter((item) => item.actors.includes(actor.id)).map((item) => item.id) : []));
   const [saveFailed, setSaveFailed] = useState(false);
+  const [saving, setSaving] = useState(false);
+  // Walking the scene tree on every keystroke in the form is wasted work; only these inputs matter.
+  const linkRows = useMemo(() => sceneLinkRows(catalog.nodes, catalog.trash, new Set(linked)), [catalog, linked]);
 
   useEffect(() => subscribeSceneCatalog(setCatalog), []);
   useEffect(() => subscribeArticles(setArticles), []);
@@ -954,9 +1013,11 @@ function ActorDialog({
     applyStats(age, next);
   }
 
-  function submit() {
+  function submit(close: boolean) {
+    if (saving) return;
     const fallback = kind === "npc" ? t("untitledNpc") : t("untitledMonster");
     setSaveFailed(false);
+    setSaving(true);
     void Promise.resolve(
       onSave({
         id: actor?.id ?? crypto.randomUUID(),
@@ -983,18 +1044,21 @@ function ActorDialog({
         })),
         links: savedLinks(catalog, linked),
         trashed: actor?.trashed ?? false,
-      }, articleIds),
-    ).catch((error: unknown) => {
-      console.error(error);
-      setSaveFailed(true);
-    });
+        position: actor?.position ?? 0,
+      }, articleIds, close),
+    )
+      .catch((error: unknown) => {
+        console.error(error);
+        setSaveFailed(true);
+      })
+      .finally(() => setSaving(false));
   }
 
   function detailSections(className: string) {
     return (
       <>
         <div className={className}>
-          <h3 className="mb-2 text-xs text-muted-foreground">{t("weapons")}</h3>
+          <h3 className="mb-2 text-base text-muted-foreground">{t("weapons")}</h3>
           <div className="grid gap-y-3">
             {attacks.map((attack, index) => (
               <div key={attack.key} className="flex min-w-0 items-center gap-1">
@@ -1031,9 +1095,9 @@ function ActorDialog({
           </div>
         </div>
         <div className={className}>
-          <h3 className="mb-2 text-xs text-muted-foreground">{t("sceneLinks")}</h3>
+          <h3 className="mb-2 text-base text-muted-foreground">{t("sceneLinks")}</h3>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            {sceneLinkRows(catalog.nodes, catalog.trash, new Set(linked)).map((row) => (
+            {linkRows.map((row) => (
               <div key={row.id} data-scene-link={row.id} data-trashed={row.trashed ? "true" : "false"} className="flex max-w-full shrink-0 items-center gap-1">
                 <label className={`flex min-w-0 items-center gap-1.5 ${row.trashed ? "text-muted-foreground opacity-60" : ""}`}>
                   <input
@@ -1049,7 +1113,7 @@ function ActorDialog({
           </div>
         </div>
         <div className={className}>
-          <h3 className="mb-2 text-xs text-muted-foreground">{t("clues")}</h3>
+          <h3 className="mb-2 text-base text-muted-foreground">{t("clues")}</h3>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             {articles.filter((item) => !item.trashed || articleIds.includes(item.id)).map((item) => (
               <div key={item.id} data-article-link={item.id} data-trashed={item.trashed ? "true" : "false"} className="flex max-w-full shrink-0 items-center gap-1">
@@ -1061,7 +1125,7 @@ function ActorDialog({
                     onChange={(event) => setArticleIds((current) => (event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id)))}
                   />
                   <span>{item.name}</span>
-                  <span className="text-[11px] text-muted-foreground">{item.kind === "clue" ? t("clue") : t("item")}</span>
+                  <span className="text-xs text-muted-foreground">{item.kind === "clue" ? t("clue") : t("item")}</span>
                 </label>
               </div>
             ))}
@@ -1072,23 +1136,28 @@ function ActorDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-6" onPointerDown={onCancel}>
+    <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-6">
       <form
         role="dialog"
         aria-labelledby={titleId}
         data-actor-form={kind}
-        className="max-h-full w-[min(990px,100%)] overflow-auto rounded-md border border-border bg-background p-4 text-[13px] shadow-lg"
+        className="max-h-full w-[min(990px,100%)] overflow-auto rounded-md border border-border bg-background p-4 text-sm shadow-lg"
         onPointerDown={(event) => event.stopPropagation()}
         onSubmit={(event) => {
           event.preventDefault();
           if (!editable) return;
-          submit();
+          submit(true);
         }}
       >
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <h2 id={titleId} className="min-w-0 text-base font-semibold">
+            {actor ? name.trim() || (kind === "npc" ? t("untitledNpc") : t("untitledMonster")) : kind === "npc" ? t("newCocNpc") : t("quickMonster")}
+          </h2>
+          <button type="button" aria-label={t("close")} className="grid size-7 shrink-0 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" onClick={onCancel}>
+            <X className="size-4" />
+          </button>
+        </div>
         <fieldset disabled={!editable} className="min-w-0 border-0 p-0">
-        <h2 id={titleId} className="mb-3 text-sm font-semibold">
-          {actor ? name.trim() || (kind === "npc" ? t("untitledNpc") : t("untitledMonster")) : kind === "npc" ? t("newCocNpc") : t("quickMonster")}
-        </h2>
         {kind === "npc" ? (
           <div>
             <div className="grid grid-cols-[repeat(4,minmax(0,1fr))_11.25rem] items-center gap-x-4 gap-y-3">
@@ -1140,7 +1209,7 @@ function ActorDialog({
               <Field label={t("mov")} value={derivedText.mov} numeric onChange={(value) => setDerivedText((current) => ({ ...current, mov: value }))} />
               <Field label={t("nativeLanguage")} value={nativeLanguage} onChange={setNativeLanguage} />
               <div className="col-span-4 mt-0 border-t border-border pt-3">
-                <h3 className="mb-2 text-xs text-muted-foreground">{t("initialState")}</h3>
+                <h3 className="mb-2 text-base text-muted-foreground">{t("initialState")}</h3>
                 <div className="grid grid-cols-4 gap-x-4">
                   <Field label={t("hp")} value={derivedText.hp} numeric onChange={(value) => setDerivedText((current) => ({ ...current, hp: value }))} />
                   <Field label={t("mp")} value={derivedText.mp} numeric onChange={(value) => setDerivedText((current) => ({ ...current, mp: value }))} />
@@ -1154,7 +1223,7 @@ function ActorDialog({
                 </div>
               </div>
               <div className="col-span-5 border-t border-border pt-3">
-              <h3 className="mb-2 text-xs text-muted-foreground">{t("skills")}</h3>
+              <h3 className="mb-2 text-base text-muted-foreground">{t("skills")}</h3>
               <div className="grid grid-cols-5 gap-x-4 gap-y-3">
                 {skills.map((skill, index) => (
                   <div key={skill.key} className="flex min-w-0 items-center gap-1">
@@ -1225,16 +1294,21 @@ function ActorDialog({
         )}
         </fieldset>
         <div className="mt-3 flex justify-end gap-2">
+          {editable && (
+            <button type="button" disabled={saving} className="rounded-md px-3 py-1 hover:bg-muted disabled:opacity-50" onClick={() => submit(false)}>
+              {t("apply")}
+            </button>
+          )}
           <button type="button" className="rounded-md px-3 py-1 hover:bg-muted" onClick={onCancel}>
             {editable ? t("cancel") : t("close")}
           </button>
           {editable && (
-            <button type="submit" className="rounded-md bg-primary px-3 py-1 text-primary-foreground">
+            <button type="submit" disabled={saving} className="rounded-md bg-primary px-3 py-1 text-primary-foreground disabled:opacity-50">
               {actor ? t("save") : t("create")}
             </button>
           )}
         </div>
-        {saveFailed ? <p className="mt-2 text-xs text-destructive">{t("actorSaveFailed")}</p> : null}
+        {saveFailed ? <p className="mt-2 text-sm text-destructive">{t("actorSaveFailed")}</p> : null}
       </form>
     </div>
   );
@@ -1268,7 +1342,7 @@ function PortraitPicker({
         title={label}
         aria-label={label}
         data-portrait=""
-        className={`grid h-full w-full place-items-center overflow-hidden rounded-md border text-xs text-muted-foreground hover:bg-muted ${src ? "border-solid border-border" : "border-dashed border-border"}`}
+        className={`grid h-full w-full place-items-center overflow-hidden rounded-md border text-sm text-muted-foreground hover:bg-muted ${src ? "border-solid border-border" : "border-dashed border-border"}`}
         onClick={() => inputRef.current?.click()}
       >
         {src ? (
@@ -1296,26 +1370,9 @@ function PortraitPicker({
 }
 
 function StoredPortrait({ projectPath, src, className }: { projectPath: string; src: string; className: string }) {
-  const [url, setUrl] = useState<string | null>(null);
+  const { url, onError } = useProjectImage(projectPath, src);
 
-  useEffect(() => {
-    let objectUrl: string | null = null;
-    let cancelled = false;
-    void loadImageObjectUrl(projectPath, src).then((next) => {
-      if (cancelled) {
-        if (next) URL.revokeObjectURL(next);
-        return;
-      }
-      objectUrl = next;
-      setUrl(next);
-    });
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [projectPath, src]);
-
-  return url ? <img src={url} alt="" className={className} /> : null;
+  return url ? <img src={url} alt="" className={className} onError={onError} /> : null;
 }
 
 function savedLinks(catalog: SceneCatalog, linked: string[]) {

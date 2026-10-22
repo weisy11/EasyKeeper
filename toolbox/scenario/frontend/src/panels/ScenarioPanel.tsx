@@ -16,6 +16,13 @@ const MIN_COLUMN = 160;
 const MIN_CENTER = 280;
 const MIN_PANE = 72;
 
+function paneHeight(ratio: number) {
+  return `calc((100% - 1px) * ${ratio})`;
+}
+
+/** Initial pane size; later sizes are set on the element directly. */
+const PANE_STYLE = { flex: "none", height: paneHeight(0.5) } as const;
+
 export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }: ToolPanelProps) {
   const play = mode === "play";
   const source = play ? (modulePath ?? "") : projectPath;
@@ -23,15 +30,21 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
   const recordPath = play ? projectPath : "";
   const locale = useScenarioLocale();
   const t = (key: ScenarioStringKey) => scenarioT(locale, key);
-  const [selected, setSelected] = useState(play ? "" : "scene1");
-  const [leftWidth, setLeftWidth] = useState(LEFT_WIDTH);
-  const [rightWidth, setRightWidth] = useState(RIGHT_WIDTH);
-  const [leftRatio, setLeftRatio] = useState(0.5);
-  const [rightRatio, setRightRatio] = useState(0.5);
+  // Nothing is selected until SceneNav has the tree; it then picks the first scene.
+  const [selected, setSelected] = useState("");
   const frameRef = useRef<HTMLDivElement>(null);
   const leftRef = useRef<HTMLDivElement>(null);
   const rightRef = useRef<HTMLDivElement>(null);
+  const panes = useRef<Record<"leftTop" | "leftBottom" | "rightTop" | "rightBottom", HTMLElement | null>>({
+    leftTop: null,
+    leftBottom: null,
+    rightTop: null,
+    rightBottom: null,
+  });
+  // Column sizes are written straight to the DOM. Dragging a separator or resizing the window
+  // then moves the panes without re-rendering the five columns inside them.
   const shares = useRef<{ left: number; right: number } | null>(null);
+  const ratios = useRef({ left: 0.5, right: 0.5 });
   const applySizeRef = useRef<() => void>(() => {});
 
   function applySize() {
@@ -39,10 +52,18 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
     if (!frame || frame.clientWidth < 80) return;
     const width = frame.clientWidth;
     if (!shares.current) shares.current = { left: LEFT_WIDTH / width, right: RIGHT_WIDTH / width };
-    setLeftWidth(shares.current.left * width);
-    setRightWidth(shares.current.right * width);
+    if (leftRef.current) leftRef.current.style.width = `${shares.current.left * width}px`;
+    if (rightRef.current) rightRef.current.style.width = `${shares.current.right * width}px`;
   }
   applySizeRef.current = applySize;
+
+  function applyRatio(side: "left" | "right") {
+    const ratio = side === "left" ? ratios.current.left : ratios.current.right;
+    const top = side === "left" ? panes.current.leftTop : panes.current.rightTop;
+    const bottom = side === "left" ? panes.current.leftBottom : panes.current.rightBottom;
+    if (top) top.style.height = paneHeight(ratio);
+    if (bottom) bottom.style.height = paneHeight(1 - ratio);
+  }
 
   useEffect(() => {
     publishCurrentScene(source, selected);
@@ -72,8 +93,7 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
       const portion = next / frame.clientWidth;
       if (edge === "left") share.left = portion;
       else share.right = portion;
-      setLeftWidth(share.left * frame.clientWidth);
-      setRightWidth(share.right * frame.clientWidth);
+      applySize();
     });
   }
 
@@ -82,25 +102,26 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
     if (!column) return;
     const span = column.clientHeight - 1;
     if (span <= MIN_PANE * 2) return;
-    const ratio = side === "left" ? leftRatio : rightRatio;
+    const ratio = side === "left" ? ratios.current.left : ratios.current.right;
     const origin = ratio * span;
     drag(event, "y", (point) => {
       const next = Math.min(span - MIN_PANE, Math.max(MIN_PANE, origin + point));
       const value = next / span;
-      if (side === "left") setLeftRatio(value);
-      else setRightRatio(value);
+      if (side === "left") ratios.current.left = value;
+      else ratios.current.right = value;
+      applyRatio(side);
     });
   }
 
   return (
     <ProjectPath.Provider value={source}>
-      <div ref={frameRef} className="flex h-full min-h-0 bg-border text-[13px]">
-        <div ref={leftRef} className="flex h-full min-h-0 min-w-0 shrink-0 flex-col" style={{ width: leftWidth }}>
-          <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: "none", height: `calc((100% - 1px) * ${leftRatio})` }}>
+      <div ref={frameRef} className="flex h-full min-h-0 bg-border text-sm">
+        <div ref={leftRef} className="flex h-full min-h-0 min-w-0 shrink-0 flex-col" style={{ width: LEFT_WIDTH }}>
+          <section ref={(node) => { panes.current.leftTop = node; }} className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={PANE_STYLE}>
             <SceneNav locale={locale} projectPath={source} selected={selected} onSelect={setSelected} editable={editable} />
           </section>
           <Separator label={t("resizeSceneClues")} orientation="horizontal" onPointerDown={(event) => dragSplit(event, "left")} />
-          <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: "none", height: `calc((100% - 1px) * ${1 - leftRatio})` }}>
+          <section ref={(node) => { panes.current.leftBottom = node; }} className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={PANE_STYLE}>
             <ClueColumn locale={locale} projectPath={source} recordPath={recordPath} selected={selected} editable={editable} />
           </section>
         </div>
@@ -110,12 +131,12 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
           <BodyEditor key={selected} projectPath={source} pageId={selected} editable={editable} />
         </section>
         <Separator label={t("resizeSideColumn")} orientation="vertical" onPointerDown={(event) => dragWidth(event, "right")} />
-        <div ref={rightRef} className="flex h-full min-h-0 min-w-0 shrink-0 flex-col" style={{ width: rightWidth }}>
-          <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: "none", height: `calc((100% - 1px) * ${rightRatio})` }}>
+        <div ref={rightRef} className="flex h-full min-h-0 min-w-0 shrink-0 flex-col" style={{ width: RIGHT_WIDTH }}>
+          <section ref={(node) => { panes.current.rightTop = node; }} className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={PANE_STYLE}>
             <NpcColumn locale={locale} projectPath={source} recordPath={recordPath} selected={selected} editable={editable} />
           </section>
           <Separator label={t("resizeNpcMap")} orientation="horizontal" onPointerDown={(event) => dragSplit(event, "right")} />
-          <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={{ flex: "none", height: `calc((100% - 1px) * ${1 - rightRatio})` }}>
+          <section ref={(node) => { panes.current.rightBottom = node; }} className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={PANE_STYLE}>
             <MapColumn locale={locale} projectPath={source} selected={selected} editable={editable} />
           </section>
         </div>
@@ -177,5 +198,5 @@ function Separator({
 }
 
 function Header({ children }: { children: ReactNode }) {
-  return <div className="flex h-7 shrink-0 items-center border-b border-border bg-card px-2.5 text-xs font-semibold">{children}</div>;
+  return <div className="flex h-7 shrink-0 items-center border-b border-border bg-card px-2.5 text-base font-semibold">{children}</div>;
 }

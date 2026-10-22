@@ -208,6 +208,8 @@ export function SceneNav({
   const [hint, setHint] = useState<Hint | null>(null);
   const [menu, setMenu] = useState<{ id: string | null; x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
+  /** Enter commits and then the unmounting input fires blur; only the first of the two may rename. */
+  const renameSettled = useRef(false);
   const [dbError, setDbError] = useState(false);
   const [picked, setPicked] = useState<string[]>(() => (selected ? [selected] : []));
   const anchorRef = useRef(selected);
@@ -242,6 +244,14 @@ export function SceneNav({
     if (open.length > 0) setOpenIds((current) => [...new Set([...current, ...open])]);
     onSelect(detail.id);
   }), [nodes, trash, onSelect]);
+
+  // Browser fallback: the built-in starter tree is ready at mount, so select its first scene now.
+  useEffect(() => {
+    if (usingDb || selectedRef.current) return;
+    const first = nodes[0]?.id;
+    if (first) onSelect(first);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usingDb]);
 
   useEffect(() => {
     if (!usingDb) return;
@@ -390,11 +400,23 @@ export function SceneNav({
       setOpenIds((ids) => (ids.includes(parentId) ? ids : [...ids, parentId]));
     }
     onSelect(node.id);
-    setRenaming(node.id);
+    beginRename(node.id);
     setMenu(null);
   }
 
+  function beginRename(id: string | null) {
+    renameSettled.current = false;
+    setRenaming(id);
+  }
+
+  function cancelRename() {
+    renameSettled.current = true;
+    setRenaming(null);
+  }
+
   async function rename(id: string, title: string) {
+    if (renameSettled.current) return;
+    renameSettled.current = true;
     const next = title.trim();
     setRenaming(null);
     if (!next || id === TRASH_ID || !editable || projectPath === "") return;
@@ -430,11 +452,18 @@ export function SceneNav({
     const ids = picked.includes(id) ? picked : [id];
     const source = forestSpot(nodes, trash, ids[0]);
     if (!source || source.area === "trash") return;
+    // Every parent that lost a node gets repacked, not just the first one (same as moveMany).
+    const sourceParents = [...new Set(ids.flatMap((current) => {
+      const spot = forestSpot(nodes, trash, current);
+      return spot ? [spot.parentId] : [];
+    }))];
     const placed = appendBlockToTrash(nodes, trash, ids, TRASH_ID);
     if (!placed) return;
     const movedIds = placed.trash.slice(trash.length).map((node) => node.id);
     await persist(TRASH_ID, placed.trash.map((node) => node.id));
-    await persist(source.parentId, siblingIdsFor(placed.nodes, placed.trash, source.parentId));
+    for (const parentId of sourceParents) {
+      await persist(parentId, siblingIdsFor(placed.nodes, placed.trash, parentId));
+    }
     setNodes(placed.nodes);
     setTrash(placed.trash);
     setTrashOpen(true);
@@ -547,11 +576,11 @@ export function SceneNav({
               <input
                 autoFocus
                 defaultValue={title}
-                className="min-w-0 flex-1 rounded border border-border bg-background px-1 text-[13px] outline-none"
+                className="min-w-0 flex-1 rounded border border-border bg-background px-1 text-sm outline-none"
                 onClick={(event) => event.stopPropagation()}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") void rename(node.id, event.currentTarget.value).catch(reportDbError);
-                  if (event.key === "Escape") setRenaming(null);
+                  if (event.key === "Escape") cancelRename();
                 }}
                 onBlur={(event) => void rename(node.id, event.currentTarget.value).catch(reportDbError)}
               />
@@ -629,7 +658,7 @@ export function SceneNav({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border bg-card px-2.5 text-xs font-semibold">
+      <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border bg-card px-2.5 text-base font-semibold">
         <span className="min-w-0 flex-1 truncate">{t("scenes")}</span>
         {editable && (
           <button type="button" title={t("addRootScene")} className="grid size-6 place-items-center rounded font-normal hover:bg-muted" onClick={() => void addNode(null, "scene").catch(reportDbError)}>
@@ -651,7 +680,7 @@ export function SceneNav({
             setMenu({ id: null, x: event.clientX, y: event.clientY });
           }}
         >
-          {dbError ? <p className="px-3 py-2 text-xs text-destructive">{t("catalogLoadFailed")}</p> : null}
+          {dbError ? <p className="px-3 py-2 text-sm text-destructive">{t("catalogLoadFailed")}</p> : null}
           {renderNodes(nodes, [], 0)}
         </div>
         {editable && (
@@ -673,7 +702,7 @@ export function SceneNav({
             )}
             <button
               type="button"
-              className="flex h-7 w-full shrink-0 items-center gap-1 px-2 text-left text-[13px]"
+              className="flex h-7 w-full shrink-0 items-center gap-1 px-2 text-left text-sm"
               onClick={() => setTrashOpen((open) => !open)}
               onContextMenu={(event) => event.preventDefault()}
             >
@@ -691,7 +720,7 @@ export function SceneNav({
       </div>
       {menu && (
         <div
-          className="fixed z-30 min-w-36 rounded-md border border-border bg-popover py-1 text-[13px] text-popover-foreground shadow-md"
+          className="fixed z-30 min-w-36 rounded-md border border-border bg-popover py-1 text-sm text-popover-foreground shadow-md"
           style={{ left: menu.x, top: menu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
@@ -701,7 +730,7 @@ export function SceneNav({
             <>
               <MenuItem label={t("addChildScene")} onClick={() => void addNode(menu.id, "scene").catch(reportDbError)} />
               <MenuItem label={t("addEvent")} onClick={() => void addNode(menu.id, "event").catch(reportDbError)} />
-              <MenuItem label={t("rename")} onClick={() => { setRenaming(menu.id); setMenu(null); }} />
+              <MenuItem label={t("rename")} onClick={() => { beginRename(menu.id); setMenu(null); }} />
               <MenuItem label={t("duplicate")} onClick={() => void duplicate(menu.id!).catch(reportDbError)} />
               <div className="my-1 h-px bg-border" />
               {inTrash ? (
