@@ -49,6 +49,7 @@ import {
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from "@/components/ui/command";
 import { TOOL_MAP, TOOLS, UNKNOWN_ICON } from "./tools";
 import { allowedToolsStore, getLoadedTool, getToolError, isAllowed, loadedToolsStore, setAllowed } from "./tools/allowed";
+import { loadModuleData } from "./tools/loader";
 import { appLog, chromeStore, settingsStore, useStore } from "./lib/store";
 import { t, translate, useL, useT, type I18nKey } from "./lib/i18n";
 import { WelcomePage } from "./project/WelcomePage";
@@ -66,6 +67,7 @@ import {
   autoCollapseFor,
   bumpLive,
   controllers,
+  consumePrepDefaultLayout,
   getController,
   liveStore,
   makePresetFile,
@@ -167,7 +169,7 @@ function ToolPanel(props: IDockviewPanelProps<{ toolId: string }>) {
 
   return (
     <PanelErrorBoundary>
-      <C panelId={toolId} projectPath={session?.projectPath ?? ""} modulePath={session?.modulePath ?? null} mode={session?.mode ?? "prep"} moduleEditable={session?.moduleEditable ?? false} />
+      <C panelId={toolId} projectPath={session?.projectPath ?? ""} modulePath={session?.modulePath ?? null} mode={session?.mode ?? "prep"} moduleEditable={session?.moduleEditable ?? false} loadModuleData={loadModuleData} />
     </PanelErrorBoundary>
   );
 }
@@ -281,17 +283,20 @@ function WorkspaceView({ id, visible }: { id: string; visible: boolean }) {
   const onReady = async (e: DockviewReadyEvent) => {
     const ctrl = getController(id);
     ctrl.attach(e.api);
-    const saved = ctrl.loadSaved();
+    const freshPrep = consumePrepDefaultLayout() && sessionStore.get()?.mode === "prep";
+    const saved = freshPrep ? null : ctrl.loadSaved();
     if (saved) {
       const missing = missingTools(saved);
       await ctrl.restore(saved);
       if (missing.length) appLog(`⚠ ${id}: layout references unknown tools: ${missing.join(", ")}`);
       appLog(`↻ ${id}: layout restored from autosave (${saved.savedAt})`);
+      if (sessionStore.get()?.mode === "prep") await ctrl.placePrepCopilot();
     } else if (sessionStore.get()?.mode === "play") {
       await ctrl.buildPlay();
       appLog(`★ ${id}: play layout`);
     } else {
       await ctrl.buildDefault();
+      if (freshPrep && ctrl.panelFor("ek.scenario")) ctrl.saveNow();
       appLog(`★ ${id}: built-in default layout`);
     }
     ctrl.applyAutoCollapse(liveStore.get().auto);
@@ -719,6 +724,10 @@ function DesktopApp() {
 }
 
 export default function App() {
+  return <WorkspaceApp />;
+}
+
+function WorkspaceApp() {
   const session = useStore(sessionStore);
   const { theme, locale } = useStore(settingsStore);
   const welcome = session == null;

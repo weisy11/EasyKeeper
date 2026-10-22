@@ -140,11 +140,6 @@ const SCHEMA = [
     actor_id TEXT NOT NULL REFERENCES ek_scenario_actor(id) ON DELETE CASCADE,
     PRIMARY KEY (article_id, actor_id)
   )`,
-  `CREATE TABLE IF NOT EXISTS ek_scenario_node_lock (
-    node_id TEXT NOT NULL REFERENCES ek_scenario_node(id) ON DELETE CASCADE,
-    article_id TEXT NOT NULL REFERENCES ek_scenario_article(id) ON DELETE CASCADE,
-    PRIMARY KEY (node_id, article_id)
-  )`,
   `INSERT INTO ek_scenario_schema (version)
    SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ek_scenario_schema)`,
 ];
@@ -158,7 +153,20 @@ const NODE_TABLE = `CREATE TABLE ek_scenario_node (
   body_file TEXT NOT NULL
 )`;
 
-export async function ensureScenarioSchema(projectPath: string) {
+const schemaReady = new Map<string, Promise<void>>();
+
+export function ensureScenarioSchema(projectPath: string) {
+  const pending = schemaReady.get(projectPath);
+  if (pending) return pending;
+  const next = applyScenarioSchema(projectPath).catch((error: unknown) => {
+    schemaReady.delete(projectPath);
+    throw error;
+  });
+  schemaReady.set(projectPath, next);
+  return next;
+}
+
+async function applyScenarioSchema(projectPath: string) {
   for (const sql of SCHEMA) await exec(projectPath, sql);
   await migrateNodeTable(projectPath);
   await migrateActorColumns(projectPath);
@@ -268,6 +276,35 @@ async function assertCanParent(projectPath: string, nodeId: string, parentId: st
   }
 }
 
+export async function loadScenarioNode(projectPath: string, id: string): Promise<ScenarioNode | null> {
+  await ensureScenarioSchema(projectPath);
+  const rows = await query<NodeRow>(
+    projectPath,
+    "SELECT id, parent_id, kind, title, position, body_file FROM ek_scenario_node WHERE id = ?1",
+    [id],
+  );
+  const row = rows[0];
+  if (!row || row.kind === "trash") return null;
+  let parent = row.parent_id;
+  while (parent) {
+    if (parent === TRASH_ID) return null;
+    const parents = await query<NodeRow>(
+      projectPath,
+      "SELECT id, parent_id, kind, title, position, body_file FROM ek_scenario_node WHERE id = ?1",
+      [parent],
+    );
+    const next = parents[0];
+    if (!next || next.kind === "trash") return null;
+    parent = next.parent_id;
+  }
+  return nodeFromRow(row);
+}
+
+export async function listActorPositions(projectPath: string): Promise<{ id: string; position: number }[]> {
+  await ensureScenarioSchema(projectPath);
+  return query<{ id: string; position: number }>(projectPath, "SELECT id, position FROM ek_scenario_actor WHERE trashed = 0 ORDER BY position");
+}
+
 export async function listChildNodes(projectPath: string, parentId: string | null): Promise<ScenarioNode[]> {
   await ensureScenarioSchema(projectPath);
   const rows = parentId
@@ -328,24 +365,6 @@ async function loadUnder(projectPath: string, parentId: string | null): Promise<
 
 export async function loadScenarioTree(projectPath: string): Promise<ScenarioTreeNode[]> {
   return loadUnder(projectPath, null);
-}
-
-export async function loadNodeLocks(projectPath: string): Promise<Record<string, string[]>> {
-  const rows = await query<{ node_id: string; article_id: string }>(projectPath, "SELECT node_id, article_id FROM ek_scenario_node_lock");
-  const locks: Record<string, string[]> = {};
-  for (const row of rows) {
-    const list = locks[row.node_id] ?? [];
-    list.push(row.article_id);
-    locks[row.node_id] = list;
-  }
-  return locks;
-}
-
-export async function setNodeLocks(projectPath: string, nodeId: string, articleIds: string[]) {
-  await exec(projectPath, "DELETE FROM ek_scenario_node_lock WHERE node_id = ?1", [nodeId]);
-  for (const articleId of articleIds) {
-    await exec(projectPath, "INSERT INTO ek_scenario_node_lock (node_id, article_id) VALUES (?1, ?2)", [nodeId, articleId]);
-  }
 }
 
 export async function loadScenarioForest(projectPath: string): Promise<{ nodes: ScenarioTreeNode[]; trash: ScenarioTreeNode[] }> {

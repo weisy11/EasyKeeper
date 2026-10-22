@@ -1,4 +1,4 @@
-import type { ToolDefinition } from "@ek/tool-api";
+import type { ModuleDataSource, ToolDefinition } from "@ek/tool-api";
 import { appLog } from "@/lib/store";
 import { CATALOG_MAP } from "./catalog";
 import { topoSort } from "./dag";
@@ -127,6 +127,11 @@ export async function openTools(roots: string[], ctx: PanelCtx): Promise<void> {
 
 export async function openTool(id: string, ctx: PanelCtx) {
   await openTools([id], ctx);
+}
+
+export async function loadModuleData(toolId: string): Promise<ModuleDataSource | null> {
+  await ensureToolsLoaded([toolId]);
+  return getLoadedTool(toolId)?.moduleData ?? null;
 }
 
 /**

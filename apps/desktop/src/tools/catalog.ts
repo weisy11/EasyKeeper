@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { BookOpenIcon, DicesIcon, SquareIcon, UserIcon, type LucideIcon } from "lucide-react";
+import { BookOpenIcon, BotIcon, DicesIcon, SquareIcon, UserIcon, type LucideIcon } from "lucide-react";
 import type { LText } from "@/lib/i18n";
 import type { ToolDefinition } from "@ek/tool-api";
 
@@ -34,6 +34,13 @@ export const BUILTIN_CATALOG: BuiltinToolMeta[] = [
     icon: UserIcon,
     defaultAllowed: true,
     load: () => import("@ek-tool/character").then((m) => m.characterTool),
+  },
+  {
+    id: "ek.copilot",
+    title: { zh: "KP Copilot", en: "KP Copilot" },
+    icon: BotIcon,
+    defaultAllowed: true,
+    load: () => import("@ek-tool/copilot").then((m) => m.copilotTool),
   },
 ];
 

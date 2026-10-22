@@ -17,6 +17,7 @@ import {
   splitProjectPath,
   validFolderName,
 } from "./fs";
+import { usePrepDefaultOnNextLayout } from "@/layout";
 import { rememberSession } from "./launchSession";
 import { forgetProject, migrateLegacyRecent, rememberProject, recentStore } from "./recent";
 import { sessionStore } from "./sessionStore";
@@ -96,7 +97,6 @@ function Chevron() {
 const PLUS = "M12 5v14M5 12h14";
 const PENCIL = "M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z";
 const BOOK = "M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z";
-const ARROW = "M5 12h14M12 5l7 7-7 7";
 const HISTORY = "M3 12a9 9 0 1 0 2.5-6.2M3 4v5h5";
 
 export function WelcomePage() {
@@ -166,6 +166,7 @@ export function WelcomePage() {
       if (caught.code === "exists") return tr("welcome.error.exists");
       if (caught.code === "invalid-name") return tr("welcome.error.invalidName");
       if (caught.code === "missing-parent") return tr("welcome.error.missingParent");
+      if (caught.code === "missing-dir") return tr("welcome.error.missingDir");
       if (caught.code === "wrong-kind") {
         return tr(expected === "scenario" ? "welcome.error.scenarioIsRecord" : "welcome.error.recordIsScenario");
       }
@@ -247,6 +248,7 @@ export function WelcomePage() {
         createParent: roots != null && samePath(parent.trim(), roots.library),
       });
       const modulePath = view.name === "create-record" ? view.modulePath : null;
+      if (kind === "scenario") usePrepDefaultOnNextLayout();
       enterProject(created.path, created.name, kind, modulePath);
     } catch (caught) {
       setError(message(caught, kind));
@@ -348,7 +350,6 @@ export function WelcomePage() {
               <Action icon={PLUS} title={tr("welcome.createScenario")} hint={tr("welcome.createScenarioHint")} testId="create-scenario" disabled={busy || !roots} onClick={() => void startCreate("scenario", "home", null)} />
               <Action icon={PENCIL} title={tr("welcome.editScenario")} hint={tr("welcome.editScenarioHint")} testId="edit-scenario" disabled={busy || !roots} onClick={() => void startPicker("edit-scenario")} />
               <Action icon={BOOK} title={tr("welcome.runWithScenario")} hint={tr("welcome.runWithScenarioHint")} testId="run-with-scenario" disabled={busy || !roots} onClick={() => void startPicker("pick-scenario")} />
-              <Action icon={ARROW} title={tr("welcome.justRun")} hint={tr("welcome.justRunHint")} testId="just-run" disabled={busy || !roots} onClick={() => void startCreate("record", "home", null)} />
               <Action icon={HISTORY} title={tr("welcome.continueGame")} hint={tr("welcome.continueGameHint")} testId="continue-game" disabled={busy || !roots} onClick={() => void startPicker("pick-record")} />
               {rootsError && <p className="err" data-welcome-error>{tr("welcome.error.generic", { message: rootsError })}</p>}
             </div>
@@ -503,7 +504,7 @@ function RecentBlock({
   return (
     <section className="block">
       <h2>{title}</h2>
-      <ul>
+      <ul className="recent-list">
         {items.map((item) => (
           <li key={item.path} className="recent">
             <button type="button" className="item" disabled={busy} data-recent={item.kind} onClick={() => onOpen(item)}>

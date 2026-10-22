@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "EasyKeeper",
   "version": "0.1.0",
-  "identifier": "io.github.weisy11.easykeeper",
+  "identifier": "easykeeper",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:47231",

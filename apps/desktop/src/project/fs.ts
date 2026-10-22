@@ -9,7 +9,7 @@ const BROWSER_FILES = "ek.browserFiles";
 const BROWSER_DIRS = "ek.browserDirs";
 
 export class ProjectError extends Error {
-  code: "exists" | "invalid-name" | "not-project" | "wrong-kind" | "missing-parent" | "io";
+  code: "exists" | "invalid-name" | "not-project" | "wrong-kind" | "missing-parent" | "missing-dir" | "io";
 
   constructor(code: ProjectError["code"], message = code) {
     super(message);
@@ -148,6 +148,7 @@ export async function createProject(opts: {
 export async function openProject(path: string, expected: ProjectKind): Promise<{ name: string }> {
   const name = splitProjectPath(path)?.name;
   if (!name) throw new ProjectError("not-project");
+  if (!(await pathExists(path))) throw new ProjectError("missing-dir");
   const scenario = await pathExists(await joinPath(path, SCENARIO_MARKER));
   const record = await pathExists(await joinPath(path, RECORD_MARKER));
   if (expected === "scenario") {

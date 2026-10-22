@@ -312,6 +312,7 @@ export function ClueColumn({
           locale={locale}
           kind={draft.kind}
           article={draft.article}
+          selected={selected}
           titleId={titleId}
           onCancel={() => setDraft(null)}
           editable={editable}
@@ -425,6 +426,7 @@ function ArticleDialog({
   locale,
   kind,
   article,
+  selected,
   titleId,
   editable,
   onCancel,
@@ -433,6 +435,7 @@ function ArticleDialog({
   locale: ScenarioLocale;
   kind: Kind;
   article: ScenarioArticle | null;
+  selected: string;
   titleId: string;
   editable: boolean;
   onCancel: () => void;
@@ -441,7 +444,7 @@ function ArticleDialog({
   const t = (key: ScenarioStringKey) => scenarioT(locale, key);
   const [name, setName] = useState(article?.name ?? "");
   const [description, setDescription] = useState(article?.description ?? "");
-  const [scenes, setScenes] = useState<string[]>(article?.scenes ?? []);
+  const [scenes, setScenes] = useState<string[]>(() => (article ? article.scenes : selected ? [selected] : []));
   const [actors, setActors] = useState<string[]>(article?.actors ?? []);
   const [catalog, setCatalog] = useState<SceneCatalog>(readSceneCatalog);
   const [people, setPeople] = useState<ActorIndexEntry[]>(readActorIndex);
