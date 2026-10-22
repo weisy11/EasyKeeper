@@ -14,6 +14,7 @@ import "dockview-react/dist/styles/dockview.css";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import {
   CommandIcon,
+  DicesIcon,
   FocusIcon,
   LockIcon,
   LockOpenIcon,
@@ -48,20 +49,24 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from "@/components/ui/command";
 import { TOOL_MAP, TOOLS, UNKNOWN_ICON } from "./tools";
-import { allowedToolsStore, getLoadedTool, getToolError, isAllowed, loadedToolsStore, setAllowed } from "./tools/allowed";
+import { allowedToolsStore, isAllowed, loadedToolsStore, setAllowed } from "./tools/allowed";
 import { loadModuleData } from "./tools/loader";
-import { appLog, chromeStore, settingsStore, useStore } from "./lib/store";
+import { installStatusBridge, pickStatus, statusStore } from "./lib/status";
+import { appLog, chromeStore, settingsStore, useStore, useStoreSelector } from "./lib/store";
 import { t, translate, useL, useT, type I18nKey } from "./lib/i18n";
 import { WelcomePage } from "./project/WelcomePage";
 import { ProjectSnapshots } from "./project/ProjectSnapshots";
 import { closeOpenProject } from "./project/closeProject";
+import { onAppClosing } from "./lib/appClose";
 import { rememberSession } from "./project/launchSession";
 import { sessionStore } from "./project/sessionStore";
 
 const kw = (...keys: I18nKey[]) => keys.flatMap((k) => [translate("zh", k), translate("en", k)]).join(" ");
 import { openTextFile, saveTextFile, log, setWelcomeWindow, isTauri } from "./lib/platform";
 import {
+  DICE_TOOL,
   EDGES,
+  FIXED_LAYOUT,
   activeController,
   allDocuments,
   autoCollapseFor,
@@ -88,7 +93,7 @@ class PanelErrorBoundary extends Component<{ children: ReactNode }, { error?: Er
   render() {
     if (this.state.error)
       return (
-        <div className="p-4 text-sm text-destructive">
+        <div className="p-4 text-base text-destructive">
           {String(this.state.error)} <Button size="xs" onClick={() => this.setState({ error: undefined })}>Reload</Button>
         </div>
       );
@@ -100,20 +105,19 @@ function ToolPanel(props: IDockviewPanelProps<{ toolId: string }>) {
   const tr = useT();
   const l = useL();
   const session = useStore(sessionStore);
-  useStore(loadedToolsStore);
-  useStore(allowedToolsStore);
   const toolId = props.params.toolId;
+  // Per-tool subscriptions: another tool loading or toggling does not re-render this panel.
+  const loaded = useStoreSelector(loadedToolsStore, (s) => s.byId[toolId]);
+  const err = useStoreSelector(loadedToolsStore, (s) => s.errors[toolId]);
+  const allowed = useStoreSelector(allowedToolsStore, (s) => s.ids.includes(toolId));
   const catalog = TOOL_MAP[toolId];
-  const loaded = getLoadedTool(toolId);
-  const err = getToolError(toolId);
-  const allowed = isAllowed(toolId);
   const name = loaded ? l(loaded.title) : catalog ? l(catalog.title) : toolId;
 
   if (!catalog) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-background p-4 text-center text-foreground" data-placeholder={toolId}>
         <div className="text-base font-medium">{tr("ph.missing", { name })}</div>
-        <div className="max-w-xs text-sm text-muted-foreground">{tr("ph.missingHint")}</div>
+        <div className="max-w-xs text-base text-muted-foreground">{tr("ph.missingHint")}</div>
         <Button size="sm" variant="outline" onClick={() => props.api.close()}>
           {tr("ph.close")}
         </Button>
@@ -125,7 +129,7 @@ function ToolPanel(props: IDockviewPanelProps<{ toolId: string }>) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-background p-4 text-center text-foreground" data-placeholder={toolId}>
         <div className="text-base font-medium">{tr("ph.disabled", { name })}</div>
-        <div className="max-w-xs text-sm text-muted-foreground">{tr("ph.disabledHint")}</div>
+        <div className="max-w-xs text-base text-muted-foreground">{tr("ph.disabledHint")}</div>
         <div className="flex gap-2">
           <Button size="sm" onClick={() => setAllowed(toolId, true)}>
             {tr("ph.enable")}
@@ -142,7 +146,7 @@ function ToolPanel(props: IDockviewPanelProps<{ toolId: string }>) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-background p-4 text-center text-foreground" data-placeholder={toolId}>
         <div className="text-base font-medium">{name}</div>
-        <div className="max-w-sm text-sm text-destructive">{err}</div>
+        <div className="max-w-sm text-base text-destructive">{err}</div>
         <Button size="sm" variant="outline" onClick={() => props.api.close()}>
           {tr("ph.close")}
         </Button>
@@ -152,7 +156,7 @@ function ToolPanel(props: IDockviewPanelProps<{ toolId: string }>) {
 
   if (!loaded) {
     return (
-      <div className="flex h-full items-center justify-center bg-background p-4 text-sm text-muted-foreground">
+      <div className="flex h-full items-center justify-center bg-background p-4 text-base text-muted-foreground">
         Loading {name}…
       </div>
     );
@@ -161,7 +165,7 @@ function ToolPanel(props: IDockviewPanelProps<{ toolId: string }>) {
   const C = loaded.panels[0]?.component;
   if (!C) {
     return (
-      <div className="flex h-full items-center justify-center bg-background p-4 text-sm text-destructive">
+      <div className="flex h-full items-center justify-center bg-background p-4 text-base text-destructive">
         Tool has no panels
       </div>
     );
@@ -176,22 +180,31 @@ function ToolPanel(props: IDockviewPanelProps<{ toolId: string }>) {
 
 function Tab(props: IDockviewPanelHeaderProps<{ toolId: string }>) {
   const l = useL();
-  const { locked } = useStore(chromeStore);
-  useStore(loadedToolsStore);
-  useStore(allowedToolsStore);
-  const catalog = TOOL_MAP[props.params.toolId];
-  const loaded = getLoadedTool(props.params.toolId);
+  const locked = useStoreSelector(chromeStore, (s) => s.locked);
+  const toolId = props.params.toolId;
+  const loaded = useStoreSelector(loadedToolsStore, (s) => s.byId[toolId]);
+  const failed = useStoreSelector(loadedToolsStore, (s) => !!s.errors[toolId]);
+  const allowed = useStoreSelector(allowedToolsStore, (s) => s.ids.includes(toolId));
+  const catalog = TOOL_MAP[toolId];
   const Icon = loaded?.icon ?? catalog?.icon ?? UNKNOWN_ICON;
-  const off = !catalog || !isAllowed(props.params.toolId) || !!getToolError(props.params.toolId);
+  const off = !catalog || !allowed || failed;
   const title = loaded ? l(loaded.title) : catalog ? l(catalog.title) : props.params.toolId;
   useEffect(() => {
     if (props.api.title !== title) props.api.setTitle(title);
   }, [title, props.api]);
+  const [location, setLocation] = useState(props.api.location.type);
+  useEffect(() => {
+    const d = props.api.onDidLocationChange((e) => setLocation(e.location.type));
+    return () => d.dispose();
+  }, [props.api]);
+  // The dice panel only lives in the grid for the instant before its window opens.
+  if (FIXED_LAYOUT && toolId === DICE_TOOL && location === "grid") return <span data-tab-hidden="" />;
   return (
     <div
-      className={`flex h-full items-center gap-1.5 px-2 text-[0.8rem] ${off ? "italic opacity-50" : ""}`}
+      className={`flex h-full items-center gap-1.5 px-2 text-sm ${off ? "italic opacity-50" : ""}`}
       title={title}
       onDoubleClick={() => {
+        if (FIXED_LAYOUT) return;
         const api = props.containerApi;
         if (api.hasMaximizedGroup()) api.exitMaximizedGroup();
         else if (props.api.group.api.location.type === "grid") props.api.maximize();
@@ -199,7 +212,7 @@ function Tab(props: IDockviewPanelHeaderProps<{ toolId: string }>) {
     >
       <Icon className="size-3.5 shrink-0" />
       <span className="ek-tab-title truncate">{title}</span>
-      {!locked && (
+      {!locked && !FIXED_LAYOUT && (
         <button
           className="ml-1 rounded p-0.5 opacity-60 hover:bg-foreground/10 hover:opacity-100"
           onPointerDown={(e) => e.stopPropagation()}
@@ -225,7 +238,7 @@ function HeaderActions(props: IDockviewHeaderActionsProps) {
   }, [props.containerApi]);
   const ctrl = [...controllers.values()].find((c) => c.api === props.containerApi);
   const loc = props.api.location.type;
-  if (!ctrl || locked) return null;
+  if (!ctrl || locked || FIXED_LAYOUT) return null;
   const btn = "rounded p-1 opacity-70 hover:bg-foreground/10 hover:opacity-100";
   return (
     <div className="flex h-full items-center gap-0.5 px-1">
@@ -270,7 +283,7 @@ function BlankPanel() {
 function Watermark(_: IWatermarkPanelProps) {
   const tr = useT();
   return (
-    <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground">
+    <div className="flex h-full items-center justify-center p-6 text-center text-base text-muted-foreground">
       {tr("ws.empty")}
     </div>
   );
@@ -283,6 +296,14 @@ function WorkspaceView({ id, visible }: { id: string; visible: boolean }) {
   const onReady = async (e: DockviewReadyEvent) => {
     const ctrl = getController(id);
     ctrl.attach(e.api);
+    if (FIXED_LAYOUT) {
+      consumePrepDefaultLayout();
+      await ctrl.buildFixed();
+      ctrl.freezeArrangement();
+      appLog(`★ ${id}: fixed ${sessionStore.get()?.mode ?? "prep"} layout`);
+      bumpLive();
+      return;
+    }
     const freshPrep = consumePrepDefaultLayout() && sessionStore.get()?.mode === "prep";
     const saved = freshPrep ? null : ctrl.loadSaved();
     if (saved) {
@@ -365,7 +386,7 @@ function CommandPalette() {
               <CommandGroup heading={tr("cmd.commands")}>
                 <CommandItem value={`open all tools ${kw("cmd.openAll")}`} onSelect={() => run(() => ctrl?.openAll())}>{tr("cmd.openAll")}</CommandItem>
                 <CommandItem value="reset clean default layout" onSelect={() => run(() => void resetDefaultLayout())}>{tr("layout.resetDefault")}</CommandItem>
-                <CommandItem value={`lock layout ${kw("lock.on", "lock.off")}`} onSelect={() => run(() => chromeStore.set((s) => ({ ...s, locked: !s.locked })))}>{locked ? tr("lock.on") : tr("lock.off")}<CommandShortcut>Ctrl+Shift+L</CommandShortcut></CommandItem>
+                <CommandItem value={`lock layout ${kw("lock.on", "lock.off")}`} onSelect={() => run(() => chromeStore.set((s) => ({ ...s, locked: !s.locked })))}>{locked ? tr("lock.on") : tr("lock.off")}</CommandItem>
                 <CommandItem value={`focus mode ${kw("focus.on", "focus.off")}`} onSelect={() => run(() => chromeStore.set((s) => ({ ...s, focusMode: !s.focusMode })))}>{focusMode ? tr("focus.on") : tr("focus.off")}<CommandShortcut>F11</CommandShortcut></CommandItem>
                 <CommandItem value={`maximize active group ${kw("panel.maximize")}`} onSelect={() => run(() => { const a = ctrl?.api; if (a?.activePanel) a.hasMaximizedGroup() ? a.exitMaximizedGroup() : a.maximizeGroup(a.activePanel); })}>{tr("panel.maximize")}<CommandShortcut>Ctrl+Shift+M</CommandShortcut></CommandItem>
                 {EDGES.map((p) => (
@@ -395,9 +416,9 @@ function ToolManager({ open, onOpenChange }: { open: boolean; onOpenChange: (o: 
             {tr("tools.manageHint")}
           </DialogDescription>
         </DialogHeader>
-        <div className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-2 text-sm">
+        <div className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-2 text-base">
           <span />
-          <span className="text-xs text-muted-foreground">{tr("tools.enabled")}</span>
+          <span className="text-base text-muted-foreground">{tr("tools.enabled")}</span>
           {TOOLS.map((tool) => {
             const on = isAllowed(tool.id);
             const Icon = tool.icon;
@@ -498,7 +519,7 @@ async function importPresets() {
 function applyPreset(snap: LayoutSnapshot, name: string) {
   const ctrl = activeController();
   if (!ctrl) return;
-  const clean: LayoutSnapshot = { ...snap, data: { ...snap.data, popoutGroups: snap.data.popoutGroups } };
+  const clean: LayoutSnapshot = { ...snap, data: { ...snap.data, popoutGroups: [] }, popoutGeometry: [] };
   ctrl.restore(clean).then(() => ctrl.saveNow());
   appLog(`▶ applied preset ${name} to ${workspacesStore.get().active}`);
 }
@@ -515,12 +536,12 @@ function TopBar({ onTools, onSavePreset }: { onTools: () => void; onSavePreset: 
   void live.tick;
   return (
     <header className="flex h-11 shrink-0 items-center gap-1 border-b border-border bg-card px-2 text-card-foreground">
-      <span data-app-mode={session?.mode ?? "prep"} className="mr-2 shrink-0 whitespace-nowrap text-sm font-semibold">
+      <span data-app-mode={session?.mode ?? "prep"} className="mr-2 shrink-0 whitespace-nowrap text-base font-semibold">
         {session?.mode === "play" ? tr("app.title.play") : tr("app.title.prep")}
       </span>
       <div className="flex-1" />
       {session?.mode === "play" && (
-        <label className="mr-2 flex items-center gap-1.5 whitespace-nowrap text-xs">
+        <label className="mr-2 flex items-center gap-1.5 whitespace-nowrap text-sm">
           <span>{tr("edit.scenario")}</span>
           <Switch
             size="sm"
@@ -534,65 +555,68 @@ function TopBar({ onTools, onSavePreset }: { onTools: () => void; onSavePreset: 
           />
         </label>
       )}
-      <Button variant="outline" size="sm" className="gap-2 text-muted-foreground" onClick={() => openPalette(document)} data-open-palette>
-        <CommandIcon className="size-3.5" />
-        <span className="hidden md:inline">{tr("cmd.search")}</span>
-        <kbd className="rounded bg-muted px-1 text-[10px]">Ctrl K</kbd>
-      </Button>
-      <div className="mx-1 flex items-center">
-        {EDGES.map((p) => {
-          const Icon = edgeIcons[p];
-          const g = ctrl?.api?.getEdgeGroup(p);
-          const collapsed = g?.isCollapsed() ?? true;
-          return (
-            <Button key={p} variant={collapsed ? "ghost" : "secondary"} size="icon-sm" title={tr(`dock.${p}` as const)} onClick={() => ctrl?.toggleEdge(p)}>
-              <Icon />
-            </Button>
-          );
-        })}
-      </div>
-      <DropdownMenu>
-        <DropdownMenuTrigger className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[0.8rem] hover:bg-muted">
-          <LayoutTemplateIcon className="size-3.5" /> <span className="hidden sm:inline">{tr("layout.menu")}</span>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent className="w-60" align="end">
-          <DropdownMenuItem onClick={onSavePreset}>{tr("layout.savePreset")}</DropdownMenuItem>
-          <DropdownMenuGroup>
-            <DropdownMenuLabel>{tr("layout.loadPreset")}</DropdownMenuLabel>
-            {presets.items.length === 0 && <DropdownMenuItem disabled>—</DropdownMenuItem>}
-            {presets.items.map((p) => (
-              <DropdownMenuItem key={p.name} onClick={() => applyPreset(p.snapshot, p.name)}>
-                {p.name}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuGroup>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={exportPresets}>{tr("layout.export")}</DropdownMenuItem>
-          <DropdownMenuItem onClick={importPresets}>{tr("layout.import")}</DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <Button variant="ghost" size="icon-sm" title={tr("tools.manage")} onClick={onTools}>
-        <WrenchIcon />
-      </Button>
-      <Button variant={locked ? "default" : "ghost"} size="icon-sm" title={locked ? tr("lock.on") : tr("lock.off")} onClick={() => chromeStore.set((s) => ({ ...s, locked: !s.locked }))}>
-        {locked ? <LockIcon /> : <LockOpenIcon />}
-      </Button>
-      <Button variant="ghost" size="icon-sm" title={tr("focus.off")} onClick={() => chromeStore.set((s) => ({ ...s, focusMode: true }))}>
-        <FocusIcon />
-      </Button>
-      <ProjectSnapshots />
+      {!FIXED_LAYOUT && (
+        <>
+          <Button variant="outline" size="sm" className="gap-2 text-muted-foreground" onClick={() => openPalette(document)} data-open-palette>
+            <CommandIcon className="size-3.5" />
+            <span className="hidden md:inline">{tr("cmd.search")}</span>
+            <kbd className="rounded bg-muted px-1 text-xs">Ctrl K</kbd>
+          </Button>
+          <div className="mx-1 flex items-center">
+            {EDGES.map((p) => {
+              const Icon = edgeIcons[p];
+              const g = ctrl?.api?.getEdgeGroup(p);
+              const collapsed = g?.isCollapsed() ?? true;
+              return (
+                <Button key={p} variant={collapsed ? "ghost" : "secondary"} size="icon-sm" title={tr(`dock.${p}` as const)} onClick={() => ctrl?.toggleEdge(p)}>
+                  <Icon />
+                </Button>
+              );
+            })}
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-sm hover:bg-muted">
+              <LayoutTemplateIcon className="size-3.5" /> <span className="hidden sm:inline">{tr("layout.menu")}</span>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent className="w-60" align="end">
+              <DropdownMenuItem onClick={onSavePreset}>{tr("layout.savePreset")}</DropdownMenuItem>
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>{tr("layout.loadPreset")}</DropdownMenuLabel>
+                {presets.items.length === 0 && <DropdownMenuItem disabled>—</DropdownMenuItem>}
+                {presets.items.map((p) => (
+                  <DropdownMenuItem key={p.name} onClick={() => applyPreset(p.snapshot, p.name)}>
+                    {p.name}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={exportPresets}>{tr("layout.export")}</DropdownMenuItem>
+              <DropdownMenuItem onClick={importPresets}>{tr("layout.import")}</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button variant="ghost" size="icon-sm" title={tr("tools.manage")} onClick={onTools}>
+            <WrenchIcon />
+          </Button>
+          <Button variant={locked ? "default" : "ghost"} size="icon-sm" title={locked ? tr("lock.on") : tr("lock.off")} onClick={() => chromeStore.set((s) => ({ ...s, locked: !s.locked }))}>
+            {locked ? <LockIcon /> : <LockOpenIcon />}
+          </Button>
+          <Button variant="ghost" size="icon-sm" title={tr("focus.off")} onClick={() => chromeStore.set((s) => ({ ...s, focusMode: true }))}>
+            <FocusIcon />
+          </Button>
+          <ProjectSnapshots />
+        </>
+      )}
       <div className="ml-1 flex items-center gap-1 border-l border-border pl-2">
-        <Button variant="outline" size="sm" data-temp-lang title={tr("settings.lang")} onClick={() => settingsStore.set((s) => ({ ...s, locale: s.locale === "zh" ? "en" : "zh" }))}>
-          {tr("settings.lang")}：{settings.locale === "zh" ? "中文" : "EN"}
-        </Button>
-        <Button variant="outline" size="sm" data-temp-theme title={tr("settings.theme")} onClick={() => settingsStore.set((s) => ({ ...s, theme: s.theme === "dark" ? "light" : "dark" }))}>
-          {tr("temp.background")}：{settings.theme === "dark" ? tr("settings.dark") : tr("settings.light")}
-        </Button>
+        {FIXED_LAYOUT && (
+          <Button variant="ghost" size="icon-sm" onClick={() => void ctrl?.openDice()} title={tr("dice.open")} data-dice>
+            <DicesIcon />
+          </Button>
+        )}
         <Button variant="ghost" size="sm" onClick={() => settingsStore.set((s) => ({ ...s, locale: s.locale === "zh" ? "en" : "zh" }))} title={tr("settings.lang")} data-lang>
           {settings.locale === "zh" ? tr("settings.langZh") : tr("settings.langEn")}
         </Button>
         <Button variant="ghost" size="icon-sm" onClick={() => settingsStore.set((s) => ({ ...s, fontScale: Math.max(0.8, +(s.fontScale - 0.1).toFixed(2)) }))} title={tr("settings.font")}>
-          <span className="text-xs">A−</span>
+          <span className="text-sm">A−</span>
         </Button>
         <Button variant="ghost" size="icon-sm" onClick={() => settingsStore.set((s) => ({ ...s, fontScale: Math.min(1.4, +(s.fontScale + 0.1).toFixed(2)) }))} title={tr("settings.font")}>
           <span className="text-sm">A+</span>
@@ -605,25 +629,28 @@ function TopBar({ onTools, onSavePreset }: { onTools: () => void; onSavePreset: 
   );
 }
 
+/** Tool-reported status. Idle shows a static "saved" line; errors replace it until the tool clears them. */
 function StatusBar() {
   const tr = useT();
-  const live = useStore(liveStore);
-  const { locked } = useStore(chromeStore);
-  const settings = useStore(settingsStore);
-  const ctrl = activeController();
-  const autoOn = EDGES.filter((p) => live.auto[p]);
+  const entries = useStoreSelector(statusStore, (s) => s.entries);
+  const { shown, errors } = pickStatus(entries);
+  if (!shown) {
+    return (
+      <footer className="flex h-7 shrink-0 items-center overflow-hidden border-t border-border bg-card px-3 text-xs whitespace-nowrap text-muted-foreground" data-status="saved">
+        <span>{tr("status.saved")}</span>
+      </footer>
+    );
+  }
+  const error = shown.level === "error";
+  const line = shown.detail ? `${shown.text} · ${shown.detail}` : shown.text;
   return (
-    <footer className="flex h-7 shrink-0 items-center gap-4 overflow-hidden border-t border-border bg-card px-3 text-[0.72rem] whitespace-nowrap text-muted-foreground">
-      <span>{tr("status.width")}: {live.width}px</span>
-      <span>
-        {tr("status.autocollapse")}: {autoOn.length ? autoOn.map((p) => tr(`dock.${p}` as const)).join(" / ") : "—"}
-      </span>
-      <span>
-        saved: {EDGES.filter((p) => ctrl?.userCollapsed[p]).map((p) => p).join(",") || "all open"}
-      </span>
-      <span>{tr("status.popouts")}: {live.popouts}</span>
-      <span>{settings.locale} · {Math.round(settings.fontScale * 100)}% · {settings.theme}</span>
-      {locked && <span className="text-amber-500">🔒 {tr("lock.on")}</span>}
+    <footer
+      className={`flex h-7 shrink-0 items-center gap-3 overflow-hidden border-t border-border bg-card px-3 text-xs whitespace-nowrap ${error ? "text-destructive" : "text-muted-foreground"}`}
+      data-status={shown.level}
+      title={line}
+    >
+      {errors > 1 && <span className="shrink-0">{tr("status.problems", { count: errors })}</span>}
+      <span className="min-w-0 truncate">{line}</span>
     </footer>
   );
 }
@@ -657,15 +684,13 @@ function applyDocSettings(doc: Document) {
 }
 
 function installKeys(doc: Document) {
+  if (FIXED_LAYOUT) return;
   doc.addEventListener("keydown", (e) => {
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === "k") {
       e.preventDefault();
       log(`Ctrl+K in ${doc === document ? "main" : "popout"} document`);
       openPalette(doc);
-    } else if (mod && e.shiftKey && e.key.toLowerCase() === "l") {
-      e.preventDefault();
-      chromeStore.set((s) => ({ ...s, locked: !s.locked }));
     } else if (mod && e.shiftKey && e.key.toLowerCase() === "m") {
       e.preventDefault();
       const a = activeController()?.api;
@@ -681,17 +706,30 @@ let installed = false;
 function installGlobalHooks() {
   if (installed) return;
   installed = true;
+  installStatusBridge();
   onEachDocument(applyDocSettings);
   onEachDocument(installKeys);
   settingsStore.subscribe(() => allDocuments().forEach(applyDocSettings));
+  // One store update per frame while the window is being resized, and none when nothing changed.
+  const applyResize = () => {
+    const width = window.innerWidth;
+    const auto = autoCollapseFor(width, window.innerHeight);
+    const prev = liveStore.get();
+    const autoChanged = EDGES.some((p) => prev.auto[p] !== auto[p]);
+    if (prev.width === width && !autoChanged) return;
+    liveStore.set((s) => ({ ...s, width, auto: autoChanged ? auto : s.auto }));
+    if (autoChanged) controllers.forEach((c) => c.api && c.applyAutoCollapse(auto));
+  };
+  let resizeFrame = 0;
   const onResize = () => {
-    const auto = autoCollapseFor(window.innerWidth, window.innerHeight);
-    const prev = liveStore.get().auto;
-    liveStore.set((s) => ({ ...s, width: window.innerWidth, auto }));
-    if (EDGES.some((p) => prev[p] !== auto[p])) controllers.forEach((c) => c.api && c.applyAutoCollapse(auto));
+    if (resizeFrame) return;
+    resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = 0;
+      applyResize();
+    });
   };
   window.addEventListener("resize", onResize);
-  onResize();
+  applyResize();
 }
 
 installGlobalHooks();
@@ -709,7 +747,7 @@ function DesktopApp() {
       <main className="relative min-h-0 flex-1">
         <WorkspaceView key={ws.active} id={ws.active} visible />
         {focusMode && (
-          <button className="absolute top-1 right-1 z-40 rounded-md bg-card/90 px-2 py-1 text-xs shadow ring-1 ring-border" onClick={() => chromeStore.set((s) => ({ ...s, focusMode: false }))}>
+          <button className="absolute top-1 right-1 z-40 rounded-md bg-card/90 px-2 py-1 text-sm shadow ring-1 ring-border" onClick={() => chromeStore.set((s) => ({ ...s, focusMode: false }))}>
             {t("focus.on")} (Esc)
           </button>
         )}
@@ -743,9 +781,16 @@ function WorkspaceApp() {
     let stop: (() => void) | undefined;
     let cancelled = false;
     void import("@tauri-apps/api/event").then(async ({ listen }) => {
-      const unlisten = await listen("ek:close-project", () => {
+      const unlistenClose = await listen("ek:close-project", () => {
         void closeOpenProject();
       });
+      const unlistenClosing = await listen("ek:app-closing", () => {
+        void onAppClosing();
+      });
+      const unlisten = () => {
+        unlistenClose();
+        unlistenClosing();
+      };
       if (cancelled) unlisten();
       else stop = unlisten;
     });

@@ -9,3 +9,9 @@ as shipped by the upstream package.
 - License: see LICENSE in this directory
 
 Do not replace this tree with a git submodule; keep a direct copy in-repo.
+
+LOCAL PATCHES
+=============
+- DiceBox constructor accepts an Element as well as a selector (src/DiceBox.js and both dist
+  bundles). The upstream `document.querySelector(selector)` only searches the main document, so
+  it finds nothing when the panel is rendered in a pop-out window.

@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { CATALOG_MAP, TOOL_MAP, TOOLS, type Region } from "./tools";
 import { getLoadedTool, isAllowed } from "./tools/allowed";
 import { closeTool, ensureToolsLoaded, openTools } from "./tools/loader";
+import { appKv } from "./lib/appKv";
 import { appLog, chromeStore, createStore, settingsStore } from "./lib/store";
 import { sessionStore } from "./project/sessionStore";
 import { t } from "./lib/i18n";
@@ -10,6 +11,24 @@ import { clearPopoutQueue, destroyWindow, focusWindow, log, on, queuePopout, typ
 
 export type EdgePos = "left" | "right" | "bottom";
 export const EDGES: EdgePos[] = ["left", "right", "bottom"];
+
+/**
+ * With four tools, one two-column layout per mode is enough: scenario on the left two thirds and
+ * the mode's side tool on the right. Users can drag the divider and resize the window; nothing
+ * else (docks, floating, pop-outs, presets, palette, lock, focus mode) is offered. All of that code
+ * stays behind this flag so it can come back once there are more tools.
+ */
+export const FIXED_LAYOUT = true;
+
+/** Tool that takes the right column in each mode. */
+const SIDE_TOOL = { prep: "ek.copilot", play: "ek.character" } as const;
+const DEFAULT_SPLIT = 1 / 3;
+const MIN_SIDE_WIDTH = 280;
+
+/** Dice open in their own window from the top bar; closing that window closes the tool. */
+export const DICE_TOOL = "ek.dice";
+const DICE_WINDOW_KEY = "ek.dice.window";
+const DICE_DEFAULT_BOX: Box = { x: 120, y: 120, width: 420, height: 560 };
 
 /** Holds the empty lower half of the play-mode side column. Not a tool. */
 export const PLAY_BLANK = "play-blank";
@@ -81,7 +100,7 @@ const labelOwner = new Map<string, WorkspaceController>();
 /** Create-scenario asks for the built-in prep layout instead of the last autosave. */
 let pendingPrepDefault = false;
 
-export function usePrepDefaultOnNextLayout() {
+export function requestPrepDefaultLayout() {
   pendingPrepDefault = true;
 }
 
@@ -102,6 +121,7 @@ export class WorkspaceController {
   geomByLabel = new Map<string, Box>();
   private originByPanel = new Map<string, EdgePos>();
   private saveTimer: number | undefined;
+  private diceBoxTimer: number | undefined;
   private restoring = false;
 
   constructor(id: string) {
@@ -125,6 +145,11 @@ export class WorkspaceController {
       log(`[${this.id}] popout added group=${p.group.id} label=${label} (${p.window.innerWidth}x${p.window.innerHeight} at ${p.window.screenX},${p.window.screenY})`);
       appLog(`⧉ ${this.id}: pop-out ${label ?? "?"} opened`);
       prepareDocument(p.window.document);
+      if (FIXED_LAYOUT && p.group.panels.some((panel) => panel.id === DICE_TOOL)) {
+        // The window holds nothing but the dice; its tab bar would only repeat the title.
+        p.group.header.hidden = true;
+        p.group.locked = "no-drop-target";
+      }
       bumpLive();
     });
     api.onDidRemovePopoutGroup((p) => {
@@ -195,6 +220,112 @@ export class WorkspaceController {
     const width = await this.prepWidth();
     copilot.group.api.setSize({ width: Math.max(280, Math.round(width / 3)) });
     scenario.api.setActive();
+  }
+
+  /**
+   * Fixed two-column layout for the current mode. Only the divider position is restored, so an
+   * older autosaved snapshot with docks or pop-outs cannot leak in.
+   */
+  async buildFixed() {
+    const api = this.api;
+    const mode = sessionStore.get()?.mode === "play" ? "play" : "prep";
+    this.restoring = true;
+    for (const p of [...api.panels]) {
+      const toolId = String((p.params as { toolId?: string } | undefined)?.toolId ?? p.id);
+      await closeTool(toolId);
+    }
+    api.clear();
+    for (const pos of EDGES) {
+      if (api.getEdgeGroup(pos)) api.removeEdgeGroup(pos);
+    }
+    this.userCollapsed = { left: false, right: false, bottom: false };
+    const side = SIDE_TOOL[mode];
+    await ensureToolsLoaded(["ek.scenario", side]);
+    const scenario = this.openPanel("ek.scenario", { focus: true });
+    const sidePanel = this.openBeside(scenario, side, "right", { inactive: true });
+    const width = await this.prepWidth();
+    sidePanel.group.api.setSize({ width: Math.max(MIN_SIDE_WIDTH, Math.round(width * this.readSplit())) });
+    scenario.api.setActive();
+    this.restoring = false;
+    bumpLive();
+  }
+
+  private splitKey() {
+    return `ek.layout.${sessionStore.get()?.mode === "play" ? "play" : "prep"}.split`;
+  }
+
+  private readSplit() {
+    const value = Number(appKv.get(this.splitKey()));
+    return value > 0.1 && value < 0.9 ? value : DEFAULT_SPLIT;
+  }
+
+  /** Right column width as a fraction of the dock. Null while the two columns are not both visible. */
+  private currentSplit(): number | null {
+    const total = this.api.width;
+    if (!total) return null;
+    const mode = sessionStore.get()?.mode === "play" ? "play" : "prep";
+    const side = this.panelFor(SIDE_TOOL[mode]);
+    if (!side || side.group.api.location.type !== "grid" || !side.group.api.isVisible) return null;
+    const value = side.group.width / total;
+    return value > 0.1 && value < 0.9 ? value : null;
+  }
+
+  /** Open the dice window, or bring it to the front. */
+  async openDice() {
+    const existing = this.panelFor(DICE_TOOL);
+    if (existing) {
+      this.reveal(existing);
+      return;
+    }
+    await ensureToolsLoaded([DICE_TOOL]);
+    const anchor = this.api.groups.find((g) => g.api.location.type === "grid" && g.api.isVisible);
+    if (!anchor) return;
+    const loaded = getLoadedTool(DICE_TOOL);
+    const titleSrc = loaded?.title ?? CATALOG_MAP[DICE_TOOL]?.title;
+    // Added as a hidden tab first: dockview can only pop out something that is already a panel.
+    const panel = this.api.addPanel({
+      id: DICE_TOOL,
+      component: "tool",
+      title: titleSrc ? titleSrc[settingsStore.get().locale] : DICE_TOOL,
+      params: { toolId: DICE_TOOL },
+      minimumWidth: loaded?.minWidth ?? 240,
+      minimumHeight: loaded?.minHeight ?? 160,
+      inactive: true,
+      position: { referenceGroup: anchor },
+    });
+    const saved = this.savedDiceBox();
+    const box = saved ?? DICE_DEFAULT_BOX;
+    log(`[${this.id}] dice window requested ${saved ? "saved" : "default"} box=${JSON.stringify(box)}`);
+    await queuePopout(this.id, box, saved === null);
+    const ok = await this.api.addPopoutGroup(panel, { position: { left: box.x!, top: box.y!, width: box.width!, height: box.height! } });
+    if (!ok) {
+      await clearPopoutQueue();
+      panel.api.close();
+    }
+  }
+
+  private savedDiceBox(): Box | null {
+    try {
+      const raw = appKv.get(DICE_WINDOW_KEY);
+      const box = raw ? (JSON.parse(raw) as Box) : null;
+      return box && box.width && box.height ? box : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Label of the native window holding the dice, if open. */
+  diceLabel(): string | null {
+    for (const p of this.api.getPopouts()) {
+      if (p.group.panels.some((panel) => panel.id === DICE_TOOL)) return this.labelByWindow.get(p.window) ?? null;
+    }
+    return null;
+  }
+
+  /** Move/resize events arrive per frame; the box is stored once they settle. */
+  rememberDiceBox(box: Box) {
+    window.clearTimeout(this.diceBoxTimer);
+    this.diceBoxTimer = window.setTimeout(() => appKv.set(DICE_WINDOW_KEY, JSON.stringify(box)), 400);
   }
 
   /** Welcome is 860px wide. Wait until the project window has opened before splitting. */
@@ -409,6 +540,14 @@ export class WorkspaceController {
   handleCloseRequested(label: string) {
     for (const p of this.api.getPopouts()) {
       if (this.labelByWindow.get(p.window) === label) {
+        if (FIXED_LAYOUT) {
+          // Closing the window closes the tool; nothing returns to the main window.
+          appLog(`✕ ${this.id}: native close on ${label} → tool closed`);
+          this.destroying.add(label);
+          for (const panel of [...p.group.panels]) panel.api.close();
+          setTimeout(() => destroyWindow(label).finally(() => this.destroying.delete(label)), 250);
+          return true;
+        }
         appLog(`↩ ${this.id}: native close on ${label} → panel returned to main window`);
         this.destroying.add(label);
         const dump = (tag: string) =>
@@ -549,12 +688,17 @@ export class WorkspaceController {
 
   saveNow() {
     if (!this.api) return;
-    localStorage.setItem(this.layoutStorageKey(), JSON.stringify(this.snapshot()));
+    if (FIXED_LAYOUT) {
+      const split = this.currentSplit();
+      if (split !== null) appKv.set(this.splitKey(), String(split));
+      return;
+    }
+    appKv.set(this.layoutStorageKey(), JSON.stringify(this.snapshot()));
   }
 
   loadSaved(): LayoutSnapshot | null {
     try {
-      const raw = localStorage.getItem(this.layoutStorageKey());
+      const raw = appKv.get(this.layoutStorageKey());
       return raw ? (JSON.parse(raw) as LayoutSnapshot) : null;
     } catch {
       return null;
@@ -568,6 +712,12 @@ export class WorkspaceController {
   setLocked(locked: boolean) {
     this.api.updateOptions({ disableDnd: locked, locked });
     for (const g of this.api.groups) g.locked = locked ? "no-drop-target" : false;
+  }
+
+  /** No tab dragging or drop targets; the dividers stay draggable (dockview's `locked` would freeze them). */
+  freezeArrangement() {
+    this.api.updateOptions({ disableDnd: true, locked: false });
+    for (const g of this.api.groups) g.locked = "no-drop-target";
   }
 
   popoutWindows() {
@@ -626,12 +776,18 @@ on<string>("ek:popout-close-requested", (label) => {
 on<{ label: string; x: number; y: number; width: number; height: number }>("ek:popout-geometry", (g) => {
   const owner = labelOwner.get(g.label);
   if (!owner) return;
-  owner.geomByLabel.set(g.label, { x: Math.round(g.x), y: Math.round(g.y), width: Math.round(g.width), height: Math.round(g.height) });
+  const box = { x: Math.round(g.x), y: Math.round(g.y), width: Math.round(g.width), height: Math.round(g.height) };
+  owner.geomByLabel.set(g.label, box);
+  if (FIXED_LAYOUT) {
+    if (owner.diceLabel() === g.label) owner.rememberDiceBox(box);
+    return;
+  }
   owner.scheduleSave();
 });
 
 let lastChrome = chromeStore.get();
 chromeStore.subscribe(() => {
+  if (FIXED_LAYOUT) return;
   const next = chromeStore.get();
   if (next.locked !== lastChrome.locked) controllers.forEach((c) => c.api && c.setLocked(next.locked));
   if (next.focusMode !== lastChrome.focusMode) {

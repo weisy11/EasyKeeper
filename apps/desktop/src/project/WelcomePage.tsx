@@ -17,7 +17,7 @@ import {
   splitProjectPath,
   validFolderName,
 } from "./fs";
-import { usePrepDefaultOnNextLayout } from "@/layout";
+import { requestPrepDefaultLayout } from "@/layout";
 import { rememberSession } from "./launchSession";
 import { forgetProject, migrateLegacyRecent, rememberProject, recentStore } from "./recent";
 import { sessionStore } from "./sessionStore";
@@ -248,7 +248,7 @@ export function WelcomePage() {
         createParent: roots != null && samePath(parent.trim(), roots.library),
       });
       const modulePath = view.name === "create-record" ? view.modulePath : null;
-      if (kind === "scenario") usePrepDefaultOnNextLayout();
+      if (kind === "scenario") requestPrepDefaultLayout();
       enterProject(created.path, created.name, kind, modulePath);
     } catch (caught) {
       setError(message(caught, kind));

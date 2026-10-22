@@ -72,27 +72,50 @@ pub fn fit_on_screen<R: Runtime>(app: &AppHandle<R>, rect: Rect) -> (Rect, bool)
   (fitted, true)
 }
 
-fn state_path<R: Runtime>(app: &AppHandle<R>) -> Option<std::path::PathBuf> {
-  Some(app.path().app_config_dir().ok()?.join("main-window.json"))
+/// Main window frame lives in the app database. Older builds kept it in `main-window.json`;
+/// that file is imported once and deleted.
+const MAIN_KV_KEY: &str = "ek.window.main";
+const LEGACY_FILE: &str = "main-window.json";
+
+fn legacy_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+  Some(app.path().app_config_dir().ok()?.join(LEGACY_FILE))
 }
 
-pub fn load_main<R: Runtime>(app: &AppHandle<R>) -> Option<MainWindowState> {
-  let raw = std::fs::read_to_string(state_path(app)?).ok()?;
+fn import_legacy(app: &AppHandle) {
+  let Some(path) = legacy_path(app) else { return };
+  let Ok(raw) = std::fs::read_to_string(&path) else { return };
+  let valid = serde_json::from_str::<MainWindowState>(&raw).is_ok();
+  let result = crate::app_db::with(app, |conn| {
+    if valid && crate::app_db::kv_get(conn, MAIN_KV_KEY)?.is_none() {
+      crate::app_db::kv_set(conn, MAIN_KV_KEY, &raw)?;
+    }
+    Ok(())
+  });
+  match result {
+    Ok(()) => {
+      let _ = std::fs::remove_file(&path);
+      println!("[RUST] imported {LEGACY_FILE} into the app database");
+    }
+    Err(err) => eprintln!("[RUST] cannot import {LEGACY_FILE}: {err}"),
+  }
+}
+
+pub fn load_main(app: &AppHandle) -> Option<MainWindowState> {
+  import_legacy(app);
+  let raw = crate::app_db::with(app, |conn| crate::app_db::kv_get(conn, MAIN_KV_KEY)).ok().flatten()?;
   serde_json::from_str(&raw).ok()
 }
 
-pub fn save_main<R: Runtime>(app: &AppHandle<R>, state: &MainWindowState) {
-  let Some(path) = state_path(app) else { return };
-  if let Some(dir) = path.parent() {
-    let _ = std::fs::create_dir_all(dir);
-  }
-  if let Ok(json) = serde_json::to_string_pretty(state) {
-    let _ = std::fs::write(path, json);
+pub fn save_main(app: &AppHandle, state: &MainWindowState) {
+  let Ok(json) = serde_json::to_string(state) else { return };
+  if let Err(err) = crate::app_db::with(app, |conn| crate::app_db::kv_set(conn, MAIN_KV_KEY, &json)) {
+    eprintln!("[RUST] cannot save main window frame: {err}");
   }
 }
 
-pub fn clear_main<R: Runtime>(app: &AppHandle<R>) {
-  if let Some(path) = state_path(app) {
+pub fn clear_main(app: &AppHandle) {
+  let _ = crate::app_db::with(app, |conn| crate::app_db::kv_delete(conn, MAIN_KV_KEY));
+  if let Some(path) = legacy_path(app) {
     let _ = std::fs::remove_file(path);
   }
 }
