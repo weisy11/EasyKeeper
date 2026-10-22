@@ -1,3 +1,4 @@
+import { serial } from "@ek/tool-api";
 import { invoke } from "@tauri-apps/api/core";
 
 /** Player-character rows in the open project's sqlite file. */
@@ -10,11 +11,11 @@ function databaseReady() {
 }
 
 async function exec(projectPath: string, sql: string, params: SqlValue[] = []) {
-  await invoke("project_db_exec", { projectPath, toolPrefix: TOOL_PREFIX, sql, params });
+  await serial(projectPath, () => invoke("project_db_exec", { projectPath, toolPrefix: TOOL_PREFIX, sql, params }));
 }
 
 async function query<T>(projectPath: string, sql: string, params: SqlValue[] = []): Promise<T[]> {
-  return invoke<T[]>("project_db_query", { projectPath, toolPrefix: TOOL_PREFIX, sql, params });
+  return serial(projectPath, () => invoke<T[]>("project_db_query", { projectPath, toolPrefix: TOOL_PREFIX, sql, params }));
 }
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS ek_character_investigator (
@@ -288,7 +289,21 @@ export function canSaveInvestigators() {
   return databaseReady();
 }
 
-async function ensureSchema(projectPath: string) {
+const schemaReady = new Map<string, Promise<void>>();
+
+/** Runs the schema and migrations once per project path. A failed attempt is forgotten so the next call retries. */
+function ensureSchema(projectPath: string): Promise<void> {
+  const pending = schemaReady.get(projectPath);
+  if (pending) return pending;
+  const next = applySchema(projectPath).catch((error: unknown) => {
+    schemaReady.delete(projectPath);
+    throw error;
+  });
+  schemaReady.set(projectPath, next);
+  return next;
+}
+
+async function applySchema(projectPath: string) {
   await exec(projectPath, SCHEMA);
   const columns = await query<{ name: string }>(projectPath, "PRAGMA table_info(ek_character_investigator)");
   if (!columns.some((column) => column.name === "player") && columns.some((column) => column.name === "pronoun")) {

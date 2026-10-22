@@ -20,6 +20,29 @@ pub fn exec(project_path: &str, tool_prefix: &str, sql: &str, params: &[Value]) 
     })
 }
 
+/// One write statement inside a batch.
+#[derive(serde::Deserialize)]
+pub struct BatchStatement {
+    pub sql: String,
+    #[serde(default)]
+    pub params: Vec<Value>,
+}
+
+/// Run several write statements in one transaction. Either every statement
+/// is applied or none is. The connection is shared across tools, so the
+/// transaction must open and close inside this single call.
+pub fn batch(project_path: &str, tool_prefix: &str, statements: &[BatchStatement]) -> Result<(), String> {
+    with_connection(project_path, tool_prefix, |conn| {
+        let tx = conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        for statement in statements {
+            let args = bind_args(&statement.params)?;
+            tx.execute(&statement.sql, rusqlite::params_from_iter(args.iter()))
+                .map_err(|err| err.to_string())?;
+        }
+        tx.commit().map_err(|err| err.to_string())
+    })
+}
+
 /// Run a query and return JSON objects, one per row.
 pub fn query(project_path: &str, tool_prefix: &str, sql: &str, params: &[Value]) -> Result<Vec<Value>, String> {
     with_connection(project_path, tool_prefix, |conn| {
@@ -256,6 +279,47 @@ mod tests {
         assert!(query(&project, "ek_scenario_", "PRAGMA table_info(ek_dice_roll)", &[]).is_err());
         assert!(exec(&project, "ek_scenario_", "ALTER TABLE ek_dice_roll ADD COLUMN note TEXT NOT NULL DEFAULT ''", &[]).is_err());
         assert!(exec(&project, "ek_scenario_", "PRAGMA writable_schema=ON", &[]).is_err());
+    }
+
+    fn statement(sql: &str, params: &[Value]) -> BatchStatement {
+        BatchStatement { sql: sql.to_string(), params: params.to_vec() }
+    }
+
+    #[test]
+    fn batch_applies_every_statement_or_none() {
+        let project = temp_project("batch");
+        exec(&project, "ek_scenario_", "CREATE TABLE ek_scenario_node (id TEXT PRIMARY KEY, position INTEGER NOT NULL)", &[]).unwrap();
+        batch(
+            &project,
+            "ek_scenario_",
+            &[
+                statement("INSERT INTO ek_scenario_node (id, position) VALUES (?1, ?2)", &[Value::String("a".into()), Value::Number(0.into())]),
+                statement("INSERT INTO ek_scenario_node (id, position) VALUES (?1, ?2)", &[Value::String("b".into()), Value::Number(1.into())]),
+            ],
+        )
+        .unwrap();
+        let failed = batch(
+            &project,
+            "ek_scenario_",
+            &[
+                statement("UPDATE ek_scenario_node SET position = 5 WHERE id = 'a'", &[]),
+                statement("INSERT INTO ek_scenario_node (id, position) VALUES ('a', 9)", &[]),
+            ],
+        );
+        assert!(failed.is_err());
+        let rows = query(&project, "ek_scenario_", "SELECT id, position FROM ek_scenario_node ORDER BY id", &[]).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["position"], Value::Number(0.into()));
+        let after = query(&project, "ek_scenario_", "SELECT 1 AS ok", &[]).unwrap();
+        assert_eq!(after.len(), 1);
+    }
+
+    #[test]
+    fn batch_respects_the_tool_prefix() {
+        let project = temp_project("batch-prefix");
+        exec(&project, "ek_dice_", "CREATE TABLE ek_dice_roll (id TEXT PRIMARY KEY)", &[]).unwrap();
+        let denied = batch(&project, "ek_scenario_", &[statement("INSERT INTO ek_dice_roll (id) VALUES ('x')", &[])]);
+        assert!(denied.is_err());
     }
 
     #[test]

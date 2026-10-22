@@ -1,10 +1,10 @@
 import "./index.css";
-import { installAppState } from "./lib/appState";
+import { installAppKv } from "./lib/appKv";
 
 void boot();
 
 async function boot() {
-  await installAppState();
+  await installAppKv();
   const { createRoot } = await import("react-dom/client");
   const { log } = await import("./lib/platform");
   const { recallSession } = await import("./project/launchSession");

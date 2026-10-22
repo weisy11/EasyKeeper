@@ -1,3 +1,4 @@
+import { appKv } from "@/lib/appKv";
 import { createStore } from "@/lib/store";
 import { joinPath, pathExists } from "./fs";
 import type { ProjectKind, RecentProject } from "./types";
@@ -40,7 +41,7 @@ let legacyItems: RecentProject[] | null = null;
 
 function loadInitial(): RecentState {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = appKv.get(KEY);
     if (!raw) return emptyState();
     const parsed = JSON.parse(raw) as { items?: unknown; recentRecords?: unknown; recentScenario?: unknown };
     if (Array.isArray(parsed.recentRecords) || Array.isArray(parsed.recentScenario)) {
@@ -63,7 +64,7 @@ export const recentStore = createStore<RecentState>(loadInitial());
 const writeState = recentStore.set.bind(recentStore);
 recentStore.set = (next) => {
   writeState(next);
-  localStorage.setItem(KEY, JSON.stringify(recentStore.get()));
+  appKv.set(KEY, JSON.stringify(recentStore.get()));
 };
 
 function listKey(kind: ProjectKind): keyof RecentState {

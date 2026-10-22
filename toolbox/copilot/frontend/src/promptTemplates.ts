@@ -1,3 +1,5 @@
+import { appKv } from "@ek/tool-api";
+
 export type PromptLang = "zh" | "en";
 
 export type PromptTemplate = {
@@ -82,6 +84,40 @@ export function defaultPromptBody(lang: PromptLang) {
 export function activePromptBody(library: PromptLibrary, lang: PromptLang) {
   const group = library[lang];
   return group.templates.find((item) => item.id === group.activeId)?.body ?? defaultPromptBody(lang);
+}
+
+const LIBRARY_KEY = "ek.copilot.promptLibrary";
+
+/**
+ * Stored library from the host settings store, or the defaults. The locked built-in template
+ * is always taken from code so later changes to the default text reach existing installs.
+ */
+export function loadPromptLibrary(): PromptLibrary {
+  const library = defaultPromptLibrary();
+  let saved: Partial<Record<PromptLang, { activeId?: unknown; templates?: unknown }>>;
+  try {
+    const raw = appKv.get(LIBRARY_KEY);
+    if (!raw) return library;
+    saved = JSON.parse(raw) as typeof saved;
+  } catch {
+    return library;
+  }
+  for (const lang of ["zh", "en"] as const) {
+    const group = saved?.[lang];
+    if (!group || !Array.isArray(group.templates)) continue;
+    const custom = group.templates.filter(
+      (item): item is PromptTemplate =>
+        !!item && typeof item === "object" && typeof item.id === "string" && item.id !== "default" && typeof item.name === "string" && typeof item.body === "string",
+    );
+    library[lang].templates.push(...custom.map((item) => ({ id: item.id, name: item.name, body: item.body, locked: false })));
+    const activeId = typeof group.activeId === "string" ? group.activeId : "default";
+    library[lang].activeId = library[lang].templates.some((item) => item.id === activeId) ? activeId : "default";
+  }
+  return library;
+}
+
+export function savePromptLibrary(library: PromptLibrary) {
+  appKv.set(LIBRARY_KEY, JSON.stringify(library));
 }
 
 export function clonePromptLibrary(library: PromptLibrary): PromptLibrary {

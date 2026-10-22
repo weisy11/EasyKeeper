@@ -72,15 +72,15 @@ export function PromptTemplateDialog({
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-6" onPointerDown={onClose}>
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-6">
       <div
         role="dialog"
         aria-label={t("promptTemplates")}
-        className="flex h-[min(884px,100%)] max-h-full w-[min(760px,100%)] flex-col rounded-md border border-border bg-background p-4 text-[13px] text-foreground shadow-lg"
+        className="flex h-[min(884px,100%)] max-h-full w-[min(760px,100%)] flex-col rounded-md border border-border bg-background p-4 text-sm text-foreground shadow-lg"
         onPointerDown={(event) => event.stopPropagation()}
       >
         <div className="mb-3 flex items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold">{t("templateList")}</h2>
+          <h2 className="text-base font-semibold">{t("templateList")}</h2>
           <button type="button" aria-label={t("close")} className="grid size-6 place-items-center rounded-md text-muted-foreground hover:bg-muted" onClick={onClose}>
             <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
               <path d="M6 6l12 12M18 6L6 18" />
@@ -88,14 +88,14 @@ export function PromptTemplateDialog({
           </button>
         </div>
         <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,2.2fr)_auto] items-start gap-x-3 gap-y-1.5">
-          <span className="relative z-10 inline-flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+          <span className="relative z-10 inline-flex items-center gap-1.5 text-base font-semibold text-muted-foreground">
             {t("language")}
-            <span className="grid size-3.5 place-items-center rounded-full border border-current text-[10px] leading-none" onMouseEnter={() => setLangHelp(true)} onMouseLeave={() => setLangHelp(false)}>
+            <span className="grid size-3.5 place-items-center rounded-full border border-current text-xs leading-none" onMouseEnter={() => setLangHelp(true)} onMouseLeave={() => setLangHelp(false)}>
               ?
             </span>
-            {langHelp ? <span className="absolute top-full left-0 z-20 mt-1 w-64 rounded-md border border-border bg-popover px-2 py-1.5 text-xs leading-5 font-normal text-popover-foreground shadow-md">{t("languageHint")}</span> : null}
+            {langHelp ? <span className="absolute top-full left-0 z-20 mt-1 w-64 rounded-md border border-border bg-popover px-2 py-1.5 text-sm leading-5 font-normal text-popover-foreground shadow-md">{t("languageHint")}</span> : null}
           </span>
-          <span className="text-xs font-semibold text-muted-foreground">{t("templateList")}</span>
+          <span className="text-base font-semibold text-muted-foreground">{t("templateList")}</span>
           <span />
           <div className={list}>
             {(["zh", "en"] as const).map((item) => (
@@ -140,23 +140,23 @@ export function PromptTemplateDialog({
             <button type="button" className={button} disabled={!current || current.locked} onClick={removeCurrent}>{t("remove")}</button>
           </span>
         </div>
-        <span className="relative z-10 mt-3 inline-flex items-center gap-1.5 text-[16px] leading-[24px] text-foreground">
+        <span className="relative z-10 mt-3 inline-flex items-center gap-1.5 text-base leading-[24px] text-foreground">
           {t("promptTemplates")}
-          <span className="grid size-4 place-items-center rounded-full border border-current text-[11px] leading-none text-muted-foreground" onMouseEnter={() => setPromptHelp(true)} onMouseLeave={() => setPromptHelp(false)}>
+          <span className="grid size-4 place-items-center rounded-full border border-current text-xs leading-none text-muted-foreground" onMouseEnter={() => setPromptHelp(true)} onMouseLeave={() => setPromptHelp(false)}>
             ?
           </span>
-          {promptHelp ? <span className="absolute top-full left-0 z-20 mt-1 w-[min(36rem,80vw)] rounded-md border border-border bg-popover px-2 py-1.5 text-[16px] leading-[24px] whitespace-pre-wrap text-popover-foreground shadow-md">{PROMPT_HELP[lang]}</span> : null}
+          {promptHelp ? <span className="absolute top-full left-0 z-20 mt-1 w-[min(36rem,80vw)] rounded-md border border-border bg-popover px-2 py-1.5 text-base leading-[24px] whitespace-pre-wrap text-popover-foreground shadow-md">{PROMPT_HELP[lang]}</span> : null}
         </span>
         <textarea
           readOnly={!current || current.locked}
           value={current?.body ?? ""}
           onChange={(event) => editBody(event.target.value)}
-          className={`mt-3 min-h-0 w-full flex-1 resize-none rounded-md border border-border p-2.5 text-[16px] leading-[24px] outline-none ${current?.locked ? "bg-muted text-foreground" : "bg-background"}`}
+          className={`mt-3 min-h-0 w-full flex-1 resize-none rounded-md border border-border p-2.5 text-base leading-[24px] outline-none ${current?.locked ? "bg-muted text-foreground" : "bg-background"}`}
         />
         <div className="mt-3 flex justify-end gap-2">
           <button type="button" className={button} onClick={() => onApply(clonePromptLibrary(draft))}>{t("apply")}</button>
           <button type="button" className={button} onClick={onClose}>{t("cancel")}</button>
-          <button type="button" className="h-8 shrink-0 rounded-md border border-foreground bg-foreground px-3 text-background" onClick={() => onConfirm(clonePromptLibrary(draft))}>{t("confirm")}</button>
+          <button type="button" className="h-8 shrink-0 rounded-md border border-foreground bg-foreground px-3 text-background" onClick={() => onConfirm(clonePromptLibrary(draft))}>{t("ok")}</button>
         </div>
       </div>
     </div>,
