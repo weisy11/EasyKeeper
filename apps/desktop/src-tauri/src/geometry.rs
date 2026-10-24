@@ -50,26 +50,44 @@ pub fn monitor_name<R: Runtime>(w: &WebviewWindow<R>) -> Option<String> {
   w.current_monitor().ok().flatten().and_then(|m| m.name().cloned())
 }
 
-/// Keeps `rect` if its title bar is reachable on a connected monitor; otherwise moves it to the
-/// primary monitor, shrunk to fit and centered. Returns the rect and whether it was changed.
-pub fn fit_on_screen<R: Runtime>(app: &AppHandle<R>, rect: Rect) -> (Rect, bool) {
-  let monitors = app.available_monitors().unwrap_or_default();
+/// Work areas of the connected displays, in global logical coordinates.
+pub fn work_areas<R: Runtime>(app: &AppHandle<R>) -> Vec<Rect> {
+  app.available_monitors().unwrap_or_default().iter().map(work_area).collect()
+}
+
+/// Keeps `rect` if its title bar is reachable on one of `areas`; otherwise moves it to
+/// `primary`, shrunk to fit and centered. Returns the rect and whether it was changed.
+///
+/// An empty `areas` means the displays could not be enumerated — on macOS that happens
+/// while the display is asleep — not that they are gone. The rectangle is then trusted
+/// as-is, so a window parked on a secondary display is not dragged back to the primary.
+pub fn fit_rect(areas: &[Rect], primary: Option<Rect>, rect: Rect) -> (Rect, bool) {
+  if areas.is_empty() {
+    return (rect, false);
+  }
   let strip = Rect { height: TITLE_STRIP, ..rect };
-  let reachable = monitors.iter().any(|m| {
-    let (w, h) = overlap(&strip, &work_area(m));
+  let reachable = areas.iter().any(|area| {
+    let (w, h) = overlap(&strip, area);
     w >= MIN_VISIBLE_W.min(rect.width) && h >= MIN_VISIBLE_H
   });
   if reachable {
     return (rect, false);
   }
-  let Some(primary) = app.primary_monitor().ok().flatten().or_else(|| monitors.into_iter().next()) else {
+  let Some(primary) = primary else {
     return (rect, false);
   };
-  let wa = work_area(&primary);
-  let width = rect.width.min(wa.width - 40.0).max(240.0);
-  let height = rect.height.min(wa.height - 60.0).max(160.0);
-  let fitted = Rect { x: wa.x + (wa.width - width) / 2.0, y: wa.y + (wa.height - height) / 2.0, width, height };
+  let width = rect.width.min(primary.width - 40.0).max(240.0);
+  let height = rect.height.min(primary.height - 60.0).max(160.0);
+  let fitted = Rect { x: primary.x + (primary.width - width) / 2.0, y: primary.y + (primary.height - height) / 2.0, width, height };
   (fitted, true)
+}
+
+/// Keeps `rect` if its title bar is reachable on a connected monitor; otherwise moves it to the
+/// primary monitor, shrunk to fit and centered. Returns the rect and whether it was changed.
+pub fn fit_on_screen<R: Runtime>(app: &AppHandle<R>, rect: Rect) -> (Rect, bool) {
+  let areas = work_areas(app);
+  let primary = app.primary_monitor().ok().flatten().map(|m| work_area(&m)).or_else(|| areas.first().copied());
+  fit_rect(&areas, primary, rect)
 }
 
 /// Main window frame lives in the app database. Older builds kept it in `main-window.json`;
@@ -117,5 +135,48 @@ pub fn clear_main(app: &AppHandle) {
   let _ = crate::app_db::with(app, |conn| crate::app_db::kv_delete(conn, MAIN_KV_KEY));
   if let Some(path) = legacy_path(app) {
     let _ = std::fs::remove_file(path);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  const PRIMARY: Rect = Rect { x: 0.0, y: 0.0, width: 1496.0, height: 996.0 };
+  const SECONDARY: Rect = Rect { x: -2560.0, y: -600.0, width: 2560.0, height: 1440.0 };
+
+  #[test]
+  fn keeps_a_rect_that_reaches_a_display() {
+    let rect = Rect { x: 20.0, y: 59.0, width: 1456.0, height: 878.0 };
+    let (out, moved) = fit_rect(&[PRIMARY], Some(PRIMARY), rect);
+    assert!(!moved);
+    assert_eq!(out, rect);
+  }
+
+  #[test]
+  fn keeps_a_rect_on_a_secondary_display() {
+    let rect = Rect { x: -1861.0, y: -375.0, width: 567.0, height: 752.0 };
+    let (out, moved) = fit_rect(&[PRIMARY, SECONDARY], Some(PRIMARY), rect);
+    assert!(!moved);
+    assert_eq!(out, rect);
+  }
+
+  #[test]
+  fn moves_an_unreachable_rect_to_the_primary_display() {
+    let rect = Rect { x: 5000.0, y: 5000.0, width: 400.0, height: 300.0 };
+    let (out, moved) = fit_rect(&[PRIMARY], Some(PRIMARY), rect);
+    assert!(moved);
+    assert_eq!(out.x, PRIMARY.x + (PRIMARY.width - 400.0) / 2.0);
+    assert_eq!(out.y, PRIMARY.y + (PRIMARY.height - 300.0) / 2.0);
+  }
+
+  #[test]
+  fn trusts_the_rect_when_no_display_can_be_enumerated() {
+    // macOS reports an empty display list while the display is asleep. That is not the
+    // same as "every display is gone", so a saved position must survive it.
+    let rect = Rect { x: -1861.0, y: -375.0, width: 567.0, height: 752.0 };
+    let (out, moved) = fit_rect(&[], Some(PRIMARY), rect);
+    assert!(!moved);
+    assert_eq!(out, rect);
   }
 }

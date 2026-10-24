@@ -102,6 +102,11 @@ fn finish_app_close(app: AppHandle) {
 const WELCOME_W: f64 = 860.0;
 const WELCOME_H: f64 = 564.0 * 1.05;
 
+/// The workspace is two columns: 480px for the scenario panel and 240px for the side
+/// panel. The main window must never get narrower than their sum, otherwise the side
+/// column is pushed out of the window and its divider can no longer be reached.
+const MIN_MAIN_W: f64 = 480.0 + 240.0;
+
 #[derive(Clone, Serialize)]
 struct PopoutCreated {
   label: String,
@@ -144,6 +149,25 @@ fn reset_main_window_state(app: AppHandle) {
 /// Debounce for the stored main window frame. Move/resize events arrive per frame; the row is written once they settle.
 struct GeometryWriter(AtomicUsize);
 const GEOMETRY_DEBOUNCE_MS: u64 = 500;
+
+/// Keeps the main window at least `MIN_MAIN_W` wide.
+///
+/// The window's own minimum size only constrains an interactive resize; a programmatic
+/// `set_size` (or a frame restored from an older, narrower configuration) goes through
+/// untouched. Below the two-column floor the side panel is pushed out of the window and
+/// its divider can no longer be reached, so the width is put back here.
+fn clamp_main_width(app: &AppHandle) {
+  let Some(w) = app.get_webview_window("main") else { return };
+  let Ok(size) = w.inner_size() else { return };
+  let scale = w.scale_factor().unwrap_or(1.0);
+  let logical_w = size.width as f64 / scale;
+  if logical_w >= MIN_MAIN_W {
+    return;
+  }
+  let logical_h = size.height as f64 / scale;
+  let _ = w.set_size(tauri::LogicalSize::new(MIN_MAIN_W, logical_h));
+  println!("[RUST] main window widened to {MIN_MAIN_W}px (was {logical_w}px)");
+}
 
 /// Capture the main window frame in memory. `flush` stores it now; otherwise the write is debounced.
 fn record_main_geometry(app: &AppHandle, flush: bool) {
@@ -403,8 +427,16 @@ async fn list_child_dirs(path: String) -> Result<Vec<String>, String> {
 }
 
 fn welcome_origin(app: &AppHandle, anchor: Option<&MainWindowState>) -> Option<(f64, f64)> {
-  let monitors = app.available_monitors().ok()?;
   let saved = anchor.map(|s| s.rect);
+  let Ok(monitors) = app.available_monitors() else {
+    return saved.map(|r| (r.x + (r.width - WELCOME_W) / 2.0, r.y + (r.height - WELCOME_H) / 2.0));
+  };
+  if monitors.is_empty() {
+    // The displays could not be enumerated (macOS reports an empty list while the display
+    // is asleep). Keep the welcome window where the project window was instead of
+    // centring it on an unknown screen.
+    return saved.map(|r| (r.x + (r.width - WELCOME_W) / 2.0, r.y + (r.height - WELCOME_H) / 2.0));
+  }
   let monitor = saved.and_then(|rect| {
     let cx = rect.x + rect.width / 2.0;
     let cy = rect.y + rect.height / 2.0;
@@ -438,7 +470,15 @@ fn place_project(app: &AppHandle, window: &tauri::WebviewWindow) {
   let saved = app.state::<MainGeometry>().0.lock().unwrap().clone();
   match saved {
     Some(state) => {
-      let (rect, _) = geometry::fit_on_screen(app, state.rect);
+      let (rect, moved) = geometry::fit_on_screen(app, state.rect);
+      println!(
+        "[RUST] main window at {},{} {}x{}{}",
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        if moved { " (was off-screen, moved onto the primary display)" } else { "" }
+      );
       let _ = window.set_size(tauri::LogicalSize::new(rect.width, rect.height));
       let _ = window.set_position(tauri::LogicalPosition::new(rect.x, rect.y));
       if state.maximized {
@@ -700,13 +740,9 @@ pub fn run() {
       let mut main_builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("EasyKeeper")
         .visible(false)
-        .min_inner_size(480.0, 360.0);
-      match &saved {
-        Some(s) => {
-          let (r, moved) = geometry::fit_on_screen(app.handle(), s.rect);
-          println!("[RUST] project frame {:?} monitor={:?} -> {r:?}{}", s.rect, s.monitor, if moved { " (off-screen, moved to primary)" } else { "" });
-        }
-        None => {}
+        .min_inner_size(MIN_MAIN_W, 360.0);
+      if let Some(s) = &saved {
+        println!("[RUST] saved main frame {:?} on monitor {:?}", s.rect, s.monitor);
       }
       main_builder = main_builder.inner_size(WELCOME_W, WELCOME_H);
       if let Some((x, y)) = welcome_origin(app.handle(), saved.as_ref()) {
@@ -747,7 +783,7 @@ pub fn run() {
                 _ => (x, y),
               };
               let (r, moved) = geometry::fit_on_screen(&handle, Rect { x, y, width, height });
-              println!("[RUST] {label} position {},{}{}", r.x, r.y, if moved { " (off-screen, moved to primary)" } else { "" });
+              println!("[RUST] {label} position {},{}{}", r.x, r.y, if moved { " (was off-screen, moved onto the primary display)" } else { "" });
               b = b.inner_size(r.width, r.height).position(r.x, r.y);
             }
           }
@@ -806,7 +842,11 @@ pub fn run() {
             }
           }
         }
-        WindowEvent::Moved(_) | WindowEvent::Resized(_) => record_main_geometry(&h3, false),
+        WindowEvent::Moved(_) => record_main_geometry(&h3, false),
+        WindowEvent::Resized(_) => {
+          clamp_main_width(&h3);
+          record_main_geometry(&h3, false);
+        }
         _ => {}
       });
 
