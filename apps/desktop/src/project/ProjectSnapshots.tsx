@@ -71,17 +71,17 @@ export function ProjectSnapshots() {
         {tr("snapshot.save")}
       </Button>
       <DropdownMenu onOpenChange={(open) => { if (open) void refresh().catch((error) => console.error(error)); }}>
-        <DropdownMenuTrigger title={tr("snapshot.list")} className="inline-flex h-7 items-center whitespace-nowrap rounded-md px-2 text-[0.8rem] hover:bg-muted">
+        <DropdownMenuTrigger title={tr("snapshot.list")} className="inline-flex h-7 items-center whitespace-nowrap rounded-md px-2 text-sm hover:bg-muted">
           {tr("snapshot.open")}
         </DropdownMenuTrigger>
         <DropdownMenuContent className="w-72" align="end">
-          <p className="px-2 py-1 text-xs text-muted-foreground">{tr("snapshot.list")}</p>
+          <p className="px-2 py-1 text-base text-muted-foreground">{tr("snapshot.list")}</p>
           {items.length === 0 ? (
-            <p className="px-2 py-1.5 text-sm text-muted-foreground">{tr("snapshot.empty")}</p>
+            <p className="px-2 py-1.5 text-base text-muted-foreground">{tr("snapshot.empty")}</p>
           ) : (
             <ul className="max-h-64 overflow-auto">
               {items.map((item) => (
-                <li key={item.id} className="flex items-center gap-2 px-2 py-1 text-sm">
+                <li key={item.id} className="flex items-center gap-2 px-2 py-1 text-base">
                   <span className="min-w-0 flex-1 truncate">{formatWhen(item.createdAt, settings.locale)}</span>
                   <button type="button" className="shrink-0 text-destructive" onClick={() => void remove(item.id).catch((error) => console.error(error))}>
                     {tr("snapshot.delete")}

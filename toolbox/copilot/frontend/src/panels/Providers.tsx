@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { copilotT, type CopilotLocale, type CopilotStringKey } from "../i18n";
-import { deleteProvider, listModels, saveProvider, type ProviderView, type ProxyView } from "../store";
+import { deleteProvider, failureParts, listModels, saveProvider, type ProviderView, type ProxyView } from "../store";
 import { FORMATS, VENDORS, addressFor, isFormat, isVendor } from "../vendors";
 
 const vendorKey: Record<(typeof VENDORS)[number], CopilotStringKey> = {
@@ -22,7 +22,7 @@ const formatKey: Record<(typeof FORMATS)[number], CopilotStringKey> = {
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-muted-foreground">{label}</span>
+      <span className="text-base text-muted-foreground">{label}</span>
       {children}
     </label>
   );
@@ -61,7 +61,7 @@ export function ServiceList({
   }, [menu]);
 
   return (
-    <div className="flex flex-col text-[13px] text-foreground">
+    <div className="flex flex-col text-sm text-foreground">
       <div className="max-h-40 overflow-y-auto rounded-md border border-border">
         {providers.map((provider) => (
           <button
@@ -163,9 +163,9 @@ export function ServiceForm({
     } catch (err) {
       setCatalog([]);
       setEnabled(new Set());
-      const code = String(err);
+      const { code, detail } = failureParts(err);
       if (code.includes("no-key")) setError(t("noKey"));
-      else setError(t("listFailed"));
+      else setError(detail ? `${t("listFailed")} ${code}: ${detail}` : t("listFailed"));
     } finally {
       setRefreshing(false);
     }
@@ -229,7 +229,7 @@ export function ServiceForm({
   }
 
   return (
-    <div className="flex flex-col gap-3 text-[13px] text-foreground">
+    <div className="flex flex-col gap-3 text-sm text-foreground">
       <div className="flex flex-col gap-3">
         <Field label={t("name")}>
           <input className={control} value={name} onChange={(event) => setName(event.target.value)} />

@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "@ek/tool-api";
+import { appKv } from "@/lib/appKv";
 import { createStore } from "@/lib/store";
 import { BUILTIN_CATALOG, CATALOG_MAP } from "./catalog";
 
@@ -10,7 +11,7 @@ function defaultAllowed(): string[] {
 
 function loadInitial(): string[] {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = appKv.get(KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as string[];
       if (Array.isArray(parsed)) {
@@ -22,7 +23,7 @@ function loadInitial(): string[] {
             changed = true;
           }
         }
-        if (changed) localStorage.setItem(KEY, JSON.stringify(ids));
+        if (changed) appKv.set(KEY, JSON.stringify(ids));
         return ids;
       }
     }
@@ -35,7 +36,7 @@ function loadInitial(): string[] {
 export const allowedToolsStore = createStore<{ ids: string[] }>({ ids: loadInitial() });
 
 allowedToolsStore.subscribe(() => {
-  localStorage.setItem(KEY, JSON.stringify(allowedToolsStore.get().ids));
+  appKv.set(KEY, JSON.stringify(allowedToolsStore.get().ids));
 });
 
 export function isAllowed(id: string) {

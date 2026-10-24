@@ -1,11 +1,30 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { ActorListItem, ArticleListItem, ModuleDataSource, SceneListNode } from "@ek/tool-api";
+import type { ActorListItem, ArticleListItem, ModuleDataSource, ModuleRecord, SceneListNode } from "@ek/tool-api";
 import { contextMessage, estimateTokens } from "../contextPrompt";
 import { copilotT, type CopilotStringKey } from "../i18n";
 import { useCopilotLocale } from "../locale";
 
 type Row = { id: string; label: string; mark?: string };
+
+const TOKEN_ESTIMATE_MS = 300;
+
+type RecordCache = Map<string, Promise<ModuleRecord | null>>;
+
+/** The dialog estimates tokens after every toggle; records it has already read are reused. */
+function cachedSource(source: ModuleDataSource, cache: RecordCache): ModuleDataSource {
+  return {
+    ...source,
+    readModuleRecord(moduleDir, kind, id) {
+      const key = `${moduleDir}\n${kind}\n${id}`;
+      const hit = cache.get(key);
+      if (hit) return hit;
+      const pending = source.readModuleRecord(moduleDir, kind, id).catch((): ModuleRecord | null => null);
+      cache.set(key, pending);
+      return pending;
+    },
+  };
+}
 
 export type ContextTag = { kind: "scene" | "actor" | "article"; id: string; label: string };
 
@@ -58,7 +77,7 @@ function Choice({ checked, label, mark, onChange }: { checked: boolean; label: s
     <label className="inline-flex max-w-full items-center gap-1.5">
       <input type="checkbox" className="size-3.5 shrink-0" checked={checked} onChange={onChange} />
       <span className="truncate">{label}</span>
-      {mark ? <span className="text-[11px] text-muted-foreground">{mark}</span> : null}
+      {mark ? <span className="text-xs text-muted-foreground">{mark}</span> : null}
     </label>
   );
 }
@@ -66,12 +85,12 @@ function Choice({ checked, label, mark, onChange }: { checked: boolean; label: s
 function Column({ title, linkedTitle, otherTitle, linked, other, picked, onToggle }: { title: string; linkedTitle: string; otherTitle: string; linked: Row[]; other: Row[]; picked: Set<string>; onToggle: (id: string) => void }) {
   return (
     <section className="min-w-0">
-      <h3 className="mb-2 text-[13px] font-semibold">{title}</h3>
-      <h4 className="mb-1 text-xs text-muted-foreground">{linkedTitle}</h4>
+      <h3 className="mb-2 text-base font-semibold">{title}</h3>
+      <h4 className="mb-1 text-base text-muted-foreground">{linkedTitle}</h4>
       <div className="flex flex-wrap gap-x-3 gap-y-1.5">
         {linked.length === 0 ? <span className="text-muted-foreground">—</span> : linked.map((row) => <Choice key={row.id} checked={picked.has(row.id)} label={row.label} mark={row.mark} onChange={() => onToggle(row.id)} />)}
       </div>
-      <h4 className="mt-3 mb-1 text-xs text-muted-foreground">{otherTitle}</h4>
+      <h4 className="mt-3 mb-1 text-base text-muted-foreground">{otherTitle}</h4>
       <div className="flex flex-wrap gap-x-3 gap-y-1.5">
         {other.length === 0 ? <span className="text-muted-foreground">—</span> : other.map((row) => <Choice key={row.id} checked={picked.has(row.id)} label={row.label} mark={row.mark} onChange={() => onToggle(row.id)} />)}
       </div>
@@ -105,6 +124,7 @@ export function ContextDialog({
   const [picked, setPicked] = useState<Set<string>>(() => new Set(selected.map((tag) => `${tag.kind}:${tag.id}`)));
   const [tokens, setTokens] = useState<number | null>(null);
   const pickedEdited = useRef(false);
+  const recordCache = useRef<RecordCache>(new Map());
   const pickedKey = [...picked].sort().join("\n");
 
   useEffect(() => {
@@ -144,14 +164,21 @@ export function ContextDialog({
       const tag = tagOf(rowId, "");
       return tag ? [tag] : [];
     });
-    void (async () => {
-      const source = await loadModuleData?.("ek.scenario");
-      const text = await contextMessage(source, moduleDir, tags, "", template);
-      if (alive) setTokens(estimateTokens(text));
-    })();
+    // The first estimate runs at once; later ones wait for the user to stop toggling.
+    const delay = tokens === null ? 0 : TOKEN_ESTIMATE_MS;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const source = await loadModuleData?.("ek.scenario");
+        const text = await contextMessage(source ? cachedSource(source, recordCache.current) : source, moduleDir, tags, "", template);
+        if (alive) setTokens(estimateTokens(text));
+      })();
+    }, delay);
     return () => {
       alive = false;
+      window.clearTimeout(timer);
     };
+    // `tokens` only picks the delay; re-running on its change would loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pickedKey, loadModuleData, moduleDir, template]);
 
   function toggle(id: string) {
@@ -178,15 +205,15 @@ export function ContextDialog({
   };
 
   return createPortal(
-    <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-6" onPointerDown={onClose}>
+    <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-6">
       <div
         role="dialog"
         aria-label={t("addContext")}
-        className="flex max-h-full w-[min(660px,100%)] flex-col rounded-md border border-border bg-background p-4 text-[13px] text-foreground shadow-lg"
+        className="flex max-h-full w-[min(660px,100%)] flex-col rounded-md border border-border bg-background p-4 text-sm text-foreground shadow-lg"
         onPointerDown={(event) => event.stopPropagation()}
       >
         <div className="mb-3 flex items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold">{t("addContext")}</h2>
+          <h2 className="text-base font-semibold">{t("addContext")}</h2>
           <button type="button" aria-label={t("close")} className="grid size-6 place-items-center rounded-md text-muted-foreground hover:bg-muted" onClick={onClose}>
             <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
               <path d="M6 6l12 12M18 6L6 18" />
@@ -201,7 +228,7 @@ export function ContextDialog({
         <div className="mt-3 flex flex-nowrap items-center justify-between gap-3 border-t border-border pt-3">
           <span className="flex shrink-0 items-center gap-2">
             <button type="button" className={button} onClick={onAdvanced}>{t("advancedMode")}</button>
-            <span className="inline-block w-[13.5rem] shrink-0 text-left text-xs whitespace-nowrap tabular-nums text-muted-foreground">{t("contextTokens").replaceAll("{count}", tokens == null ? "…" : tokens.toLocaleString(locale === "zh" ? "zh-CN" : "en-US"))}</span>
+            <span className="inline-block w-[13.5rem] shrink-0 text-left text-sm whitespace-nowrap tabular-nums text-muted-foreground">{t("contextTokens").replaceAll("{count}", tokens == null ? "…" : tokens.toLocaleString(locale === "zh" ? "zh-CN" : "en-US"))}</span>
           </span>
           <span className="flex shrink-0 gap-2">
             <button type="button" className={button} onClick={onClose}>

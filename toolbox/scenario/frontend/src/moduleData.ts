@@ -10,7 +10,7 @@ import type {
   SceneListNode,
   SceneRecord,
 } from "@ek/tool-api";
-import { listActorPositions, listChildNodes, loadScenarioActors, loadScenarioArticles, loadScenarioNode } from "./db";
+import { listActorPositions, listLiveNodes, loadScenarioActor, loadScenarioActors, loadScenarioArticle, loadScenarioArticles, loadScenarioNode } from "./db";
 import { readPage } from "./storage";
 
 const EMPTY_BODY = { type: "doc", content: [{ type: "paragraph" }] };
@@ -37,56 +37,40 @@ export async function currentScene(moduleDir: string): Promise<CurrentScene | nu
   return id ? { id } : null;
 }
 
-function collectIds(nodes: SceneListNode[], into = new Set<string>()) {
-  for (const node of nodes) {
-    into.add(node.id);
-    collectIds(node.children, into);
-  }
-  return into;
-}
-
-async function sceneTree(moduleDir: string, parentId: string | null): Promise<SceneListNode[]> {
-  const rows = await listChildNodes(moduleDir, parentId);
-  const nodes: SceneListNode[] = [];
-  for (const row of rows) {
-    if (row.kind !== "scene" && row.kind !== "event") continue;
-    nodes.push({
-      id: row.id,
-      kind: row.kind,
-      title: row.title,
-      position: row.position,
-      children: await sceneTree(moduleDir, row.id),
-    });
-  }
-  return nodes;
-}
-
+/** Ids of every node outside the trash. */
 async function liveSceneIds(moduleDir: string) {
-  return collectIds(await sceneTree(moduleDir, null));
+  return new Set((await listLiveNodes(moduleDir)).map((node) => node.id));
 }
 
+/** One query for the whole tree. Rows come parents first, so each child's parent is already placed. */
 export async function listScenes(moduleDir: string): Promise<SceneListNode[]> {
-  return sceneTree(moduleDir, null);
+  const rows = await listLiveNodes(moduleDir);
+  const nodes = new Map<string, SceneListNode>();
+  const roots: SceneListNode[] = [];
+  for (const row of rows) {
+    const node: SceneListNode = { id: row.id, kind: row.kind, title: row.title, position: row.position, children: [] };
+    nodes.set(row.id, node);
+    const parent = row.parentId ? nodes.get(row.parentId) : null;
+    (parent ? parent.children : roots).push(node);
+  }
+  return roots;
 }
 
 export async function listActors(moduleDir: string): Promise<ActorListItem[]> {
-  const scenes = await liveSceneIds(moduleDir);
-  const [actors, positions] = await Promise.all([loadScenarioActors(moduleDir), listActorPositions(moduleDir)]);
-  const positionOf = new Map(positions.map((row) => [row.id, row.position]));
+  const [scenes, actors] = await Promise.all([liveSceneIds(moduleDir), loadScenarioActors(moduleDir)]);
   return actors
     .filter((actor) => !actor.trashed)
     .map((actor) => ({
       id: actor.id,
       kind: actor.kind,
       name: actor.name,
-      position: positionOf.get(actor.id) ?? 0,
+      position: actor.position,
       sceneIds: actor.links.filter((id) => scenes.has(id)),
     }));
 }
 
 export async function listArticles(moduleDir: string): Promise<ArticleListItem[]> {
-  const scenes = await liveSceneIds(moduleDir);
-  const articles = await loadScenarioArticles(moduleDir);
+  const [scenes, articles] = await Promise.all([liveSceneIds(moduleDir), loadScenarioArticles(moduleDir)]);
   return articles
     .filter((article) => !article.trashed)
     .map((article) => ({
@@ -106,10 +90,8 @@ async function readScene(moduleDir: string, id: string): Promise<SceneRecord | n
 }
 
 async function readActor(moduleDir: string, id: string): Promise<ActorRecord | null> {
-  const scenes = await liveSceneIds(moduleDir);
-  const [actors, positions] = await Promise.all([loadScenarioActors(moduleDir), listActorPositions(moduleDir)]);
-  const actor = actors.find((item) => item.id === id && !item.trashed);
-  if (!actor) return null;
+  const [scenes, actor] = await Promise.all([liveSceneIds(moduleDir), loadScenarioActor(moduleDir, id)]);
+  if (!actor || actor.trashed) return null;
   return {
     id: actor.id,
     kind: actor.kind,
@@ -128,16 +110,14 @@ async function readActor(moduleDir: string, id: string): Promise<ActorRecord | n
     skills: actor.skills,
     attacks: actor.attacks,
     sceneIds: actor.links.filter((sceneId) => scenes.has(sceneId)),
-    position: positions.find((row) => row.id === id)?.position ?? 0,
+    position: actor.position,
   };
 }
 
 async function readArticle(moduleDir: string, id: string): Promise<ArticleRecord | null> {
-  const scenes = await liveSceneIds(moduleDir);
-  const [articles, actors] = await Promise.all([loadScenarioArticles(moduleDir), loadScenarioActors(moduleDir)]);
-  const article = articles.find((item) => item.id === id && !item.trashed);
-  if (!article) return null;
-  const liveActors = new Set(actors.filter((actor) => !actor.trashed).map((actor) => actor.id));
+  const [scenes, article, actors] = await Promise.all([liveSceneIds(moduleDir), loadScenarioArticle(moduleDir, id), listActorPositions(moduleDir)]);
+  if (!article || article.trashed) return null;
+  const liveActors = new Set(actors.map((actor) => actor.id));
   return {
     id: article.id,
     kind: article.kind,

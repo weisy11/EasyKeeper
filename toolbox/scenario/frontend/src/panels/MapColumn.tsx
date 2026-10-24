@@ -1,5 +1,6 @@
-import { Filter, Plus } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { savePastedImage, useProjectImage } from "@ek/tool-api";
+import { Filter, Plus, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   deleteScenarioMap,
   ensureScenarioSchema,
@@ -13,7 +14,6 @@ import {
 } from "../db";
 import { scenarioT, type ScenarioLocale, type ScenarioStringKey } from "../i18n";
 import { presentSceneIds, readSceneCatalog, sceneLinkRows, subscribeSceneCatalog, type SceneCatalog } from "../sceneLinks";
-import { loadImageObjectUrl, savePastedImage } from "../storage";
 
 export function MapColumn({ locale, projectPath, selected, editable }: { locale: ScenarioLocale; projectPath: string; selected: string; editable: boolean }) {
   const t = (key: ScenarioStringKey) => scenarioT(locale, key);
@@ -23,6 +23,9 @@ export function MapColumn({ locale, projectPath, selected, editable }: { locale:
   const [linking, setLinking] = useState<string | null>(null);
   const [linkedOnly, setLinkedOnly] = useState(false);
   const [catalog, setCatalog] = useState<SceneCatalog>(readSceneCatalog);
+  const linkingMap = linking ? maps.find((item) => item.id === linking) : undefined;
+  const linkingLinks = linkingMap?.links ?? [];
+  const linkRows = useMemo(() => (linkingMap ? sceneLinkRows(catalog.nodes, catalog.trash, new Set(linkingMap.links)) : []), [catalog, linkingMap]);
   const fileRef = useRef<HTMLInputElement>(null);
   const replaceId = useRef<string | null>(null);
   const suppressClick = useRef(false);
@@ -53,23 +56,17 @@ export function MapColumn({ locale, projectPath, selected, editable }: { locale:
   useEffect(() => {
     if (!catalog.ready || !editable || projectPath === "") return;
     const present = presentSceneIds(catalog.nodes, catalog.trash);
-    setMaps((items) => {
-      let changed = false;
-      const next = items.map((item) => {
-        const links = item.links.filter((id) => present.has(id));
-        if (links.length === item.links.length) return item;
-        changed = true;
-        return { ...item, links };
-      });
-      if (changed && usingDb) {
-        for (const item of next) {
-          const previous = items.find((map) => map.id === item.id);
-          if (previous && previous.links.length !== item.links.length) void updateScenarioMapLinks(projectPath, item.id, item.links);
-        }
-      }
-      return changed ? next : items;
+    // Decide outside the state updater; updaters must stay pure (Strict Mode runs them twice).
+    const pruned = maps.flatMap((item) => {
+      const links = item.links.filter((id) => present.has(id));
+      return links.length === item.links.length ? [] : [{ ...item, links }];
     });
-  }, [catalog, editable, projectPath, usingDb]);
+    if (pruned.length === 0) return;
+    setMaps((items) => items.map((item) => pruned.find((next) => next.id === item.id) ?? item));
+    if (usingDb) {
+      for (const item of pruned) void updateScenarioMapLinks(projectPath, item.id, item.links);
+    }
+  }, [catalog, editable, projectPath, usingDb, maps]);
 
   useEffect(() => {
     if (!menu) return;
@@ -152,7 +149,7 @@ export function MapColumn({ locale, projectPath, selected, editable }: { locale:
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border bg-card px-2.5 text-xs font-semibold">
+      <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border bg-card px-2.5 text-base font-semibold">
         <span className="min-w-0 flex-1 truncate">{t("map")}</span>
         <button
           type="button"
@@ -260,7 +257,7 @@ export function MapColumn({ locale, projectPath, selected, editable }: { locale:
       {menu && (
         <div
           data-map-menu=""
-          className="fixed z-30 min-w-28 rounded-md border border-border bg-popover py-1 text-[13px] text-popover-foreground shadow-md"
+          className="fixed z-30 min-w-28 rounded-md border border-border bg-popover py-1 text-sm text-popover-foreground shadow-md"
           style={{ left: menu.x, top: menu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
@@ -291,18 +288,23 @@ export function MapColumn({ locale, projectPath, selected, editable }: { locale:
         </div>
       )}
       {linking && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-6" onClick={() => setLinking(null)}>
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-6">
           <div
             role="dialog"
             aria-label={t("sceneLinks")}
             data-map-links=""
-            className="max-h-full w-[min(520px,100%)] overflow-auto rounded-md border border-border bg-background p-4 text-[13px] shadow-lg"
+            className="max-h-full w-[min(520px,100%)] overflow-auto rounded-md border border-border bg-background p-4 text-sm shadow-lg"
             onClick={(event) => event.stopPropagation()}
           >
-            <h3 className="mb-2 text-xs text-muted-foreground">{t("sceneLinks")}</h3>
+            <div className="mb-2 flex items-start justify-between gap-3">
+              <h3 className="min-w-0 text-base text-muted-foreground">{t("sceneLinks")}</h3>
+              <button type="button" aria-label={t("close")} className="grid size-7 shrink-0 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => setLinking(null)}>
+                <X className="size-4" />
+              </button>
+            </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              {sceneLinkRows(catalog.nodes, catalog.trash, new Set(maps.find((item) => item.id === linking)?.links ?? [])).map((row) => {
-                const links = maps.find((item) => item.id === linking)?.links ?? [];
+              {linkRows.map((row) => {
+                const links = linkingLinks;
                 return (
                   <div key={row.id} data-scene-link={row.id} data-trashed={row.trashed ? "true" : "false"} className="flex max-w-full shrink-0 items-center gap-1">
                     <label className={`flex min-w-0 items-center gap-1.5 ${row.trashed ? "text-muted-foreground opacity-60" : ""}`}>
@@ -332,8 +334,8 @@ export function MapColumn({ locale, projectPath, selected, editable }: { locale:
           className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-6"
           onClick={() => setPreview(null)}
         >
-          <button type="button" className="absolute top-3 right-3 rounded-md bg-background/90 px-2 py-1 text-xs" onClick={() => setPreview(null)}>
-            {t("closeMap")}
+          <button type="button" aria-label={t("close")} className="absolute top-3 right-3 grid size-7 place-items-center rounded-md bg-background/90 text-muted-foreground hover:bg-background hover:text-foreground" onClick={() => setPreview(null)}>
+            <X className="size-4" />
           </button>
           <div onClick={(event) => event.stopPropagation()}>
             <MapThumb projectPath={projectPath} src={preview.src} className="max-h-[85vh] max-w-[90vw] object-contain" />
@@ -345,31 +347,17 @@ export function MapColumn({ locale, projectPath, selected, editable }: { locale:
 }
 
 function MapLinkCaption({ map, catalog }: { map: ScenarioMap; catalog: SceneCatalog }) {
-  const rows = sceneLinkRows(catalog.nodes, catalog.trash, new Set(map.links)).filter((row) => map.links.includes(row.id));
+  const rows = useMemo(
+    () => sceneLinkRows(catalog.nodes, catalog.trash, new Set(map.links)).filter((row) => map.links.includes(row.id)),
+    [catalog, map.links],
+  );
   if (rows.length === 0) return null;
-  return <span className="mt-1 block truncate text-left text-[11px] text-muted-foreground">{rows.map((row) => row.title).join("、")}</span>;
+  return <span className="mt-1 block truncate text-left text-xs text-muted-foreground">{rows.map((row) => row.title).join("、")}</span>;
 }
 
 function MapThumb({ projectPath, src, className = "max-h-28 w-full object-contain" }: { projectPath: string; src: string; className?: string }) {
-  const [url, setUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    let objectUrl: string | null = null;
-    let cancelled = false;
-    void loadImageObjectUrl(projectPath, src).then((next) => {
-      if (cancelled) {
-        if (next) URL.revokeObjectURL(next);
-        return;
-      }
-      objectUrl = next;
-      setUrl(next);
-    });
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [projectPath, src]);
+  const { url, onError } = useProjectImage(projectPath, src);
 
   if (!url) return <div className={className.includes("max-h-28") ? "h-16 w-full bg-muted" : className} />;
-  return <img src={url} alt="" draggable={false} className={className} />;
+  return <img src={url} alt="" draggable={false} className={className} onError={onError} />;
 }

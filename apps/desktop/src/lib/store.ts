@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { appKv } from "./appKv";
 
 export type Store<T> = {
   get: () => T;
@@ -10,7 +11,7 @@ export function createStore<T>(initial: T, persistKey?: string): Store<T> {
   let value = initial;
   if (persistKey) {
     try {
-      const raw = localStorage.getItem(persistKey);
+      const raw = appKv.get(persistKey);
       if (raw) value = { ...initial, ...JSON.parse(raw) };
     } catch {
       /* ignore corrupt storage */
@@ -21,7 +22,7 @@ export function createStore<T>(initial: T, persistKey?: string): Store<T> {
     get: () => value,
     set: (next) => {
       value = typeof next === "function" ? (next as (p: T) => T)(value) : next;
-      if (persistKey) localStorage.setItem(persistKey, JSON.stringify(value));
+      if (persistKey) appKv.set(persistKey, JSON.stringify(value));
       subs.forEach((f) => f());
     },
     subscribe: (fn) => {
@@ -33,6 +34,14 @@ export function createStore<T>(initial: T, persistKey?: string): Store<T> {
 
 export function useStore<T>(store: Store<T>): T {
   return useSyncExternalStore(store.subscribe, store.get);
+}
+
+/**
+ * Subscribe to one derived value. The component re-renders only when the selected value
+ * changes (by `Object.is`), so pick primitives or stable references.
+ */
+export function useStoreSelector<T, R>(store: Store<T>, select: (value: T) => R): R {
+  return useSyncExternalStore(store.subscribe, () => select(store.get()));
 }
 
 export type Locale = "zh" | "en";

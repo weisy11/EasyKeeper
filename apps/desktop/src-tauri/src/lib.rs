@@ -1,4 +1,5 @@
-mod app_state;
+mod app_db;
+mod blocking;
 mod copilot;
 mod copilot_chats;
 mod copilot_http;
@@ -7,9 +8,9 @@ mod project_db;
 mod session;
 mod snapshot;
 
-use app_state::{app_state_load, app_state_save};
-use copilot::{copilot_complete, copilot_delete_provider, copilot_list_models, copilot_providers, copilot_proxies, copilot_save_provider, copilot_save_proxy, copilot_stop, open_copilot_editor};
-use copilot_chats::{copilot_chat_list, copilot_chat_load, copilot_chat_save, copilot_module_chat_get, copilot_module_chat_set};
+use app_db::{app_kv_all, app_kv_delete, app_kv_get, app_kv_set};
+use copilot::{copilot_complete, copilot_delete_provider, copilot_list_models, copilot_providers, copilot_proxies, copilot_save_provider, copilot_save_proxy, copilot_stop};
+use copilot_chats::{copilot_chat_delete, copilot_chat_list, copilot_chat_messages, copilot_chat_open, copilot_message_append, copilot_module_chat_get, copilot_module_chat_set};
 use geometry::{MainWindowState, Rect};
 use session::{session_get, session_set, LaunchMemory};
 use snapshot::{create_project_snapshot, delete_project_snapshot, list_project_snapshots};
@@ -47,8 +48,64 @@ struct MainGeometry(Mutex<Option<MainWindowState>>);
 /// While the welcome page is up, resize events must not replace the project window frame.
 struct PersistMainWindow(AtomicBool);
 
+/// Closing waits for the frontend to flush debounced writes (app state, pages, chats).
+/// `flushed` turns true when the frontend reports back or the grace period runs out;
+/// `quit` records whether the pending action is quitting the app or closing the main window.
+struct CloseFlush {
+  flushed: AtomicBool,
+  quit: AtomicBool,
+}
+
+const CLOSE_FLUSH_GRACE_MS: u64 = 2000;
+const QUIT_ID: &str = "ek-quit";
+
+/// Ask the frontend to flush before closing. Returns true when the close may proceed right now.
+fn start_close_flush(app: &AppHandle, quit: bool) -> bool {
+  let state = app.state::<CloseFlush>();
+  if state.flushed.load(Ordering::SeqCst) {
+    return true;
+  }
+  state.quit.store(quit, Ordering::SeqCst);
+  if app.get_webview_window("main").is_none() || app.emit_to("main", "ek:app-closing", ()).is_err() {
+    state.flushed.store(true, Ordering::SeqCst);
+    return true;
+  }
+  let handle = app.clone();
+  std::thread::spawn(move || {
+    std::thread::sleep(std::time::Duration::from_millis(CLOSE_FLUSH_GRACE_MS));
+    if !handle.state::<CloseFlush>().flushed.swap(true, Ordering::SeqCst) {
+      println!("[RUST] close flush timed out after {CLOSE_FLUSH_GRACE_MS}ms; closing anyway");
+      complete_close(&handle);
+    }
+  });
+  false
+}
+
+fn complete_close(app: &AppHandle) {
+  if app.state::<CloseFlush>().quit.load(Ordering::SeqCst) {
+    // Quitting skips the window close handler, so persist the frame here.
+    write_main_geometry(app);
+    app.exit(0);
+  } else if let Some(window) = app.get_webview_window("main") {
+    let _ = window.close();
+  }
+}
+
+/// The frontend calls this once every pending write has reached disk.
+#[tauri::command]
+fn finish_app_close(app: AppHandle) {
+  if !app.state::<CloseFlush>().flushed.swap(true, Ordering::SeqCst) {
+    complete_close(&app);
+  }
+}
+
 const WELCOME_W: f64 = 860.0;
 const WELCOME_H: f64 = 564.0 * 1.05;
+
+/// The workspace is two columns: 480px for the scenario panel and 240px for the side
+/// panel. The main window must never get narrower than their sum, otherwise the side
+/// column is pushed out of the window and its divider can no longer be reached.
+const MIN_MAIN_W: f64 = 480.0 + 240.0;
 
 #[derive(Clone, Serialize)]
 struct PopoutCreated {
@@ -84,10 +141,36 @@ fn clear_popout_queue(state: tauri::State<PopoutQueue>) {
 #[tauri::command]
 fn reset_main_window_state(app: AppHandle) {
   app.state::<MainGeometry>().0.lock().unwrap().take();
+  // Invalidate any debounced write still waiting so it cannot resurrect the frame.
+  app.state::<GeometryWriter>().0.fetch_add(1, Ordering::SeqCst);
   geometry::clear_main(&app);
 }
 
-fn record_main_geometry(app: &AppHandle) {
+/// Debounce for the stored main window frame. Move/resize events arrive per frame; the row is written once they settle.
+struct GeometryWriter(AtomicUsize);
+const GEOMETRY_DEBOUNCE_MS: u64 = 500;
+
+/// Keeps the main window at least `MIN_MAIN_W` wide.
+///
+/// The window's own minimum size only constrains an interactive resize; a programmatic
+/// `set_size` (or a frame restored from an older, narrower configuration) goes through
+/// untouched. Below the two-column floor the side panel is pushed out of the window and
+/// its divider can no longer be reached, so the width is put back here.
+fn clamp_main_width(app: &AppHandle) {
+  let Some(w) = app.get_webview_window("main") else { return };
+  let Ok(size) = w.inner_size() else { return };
+  let scale = w.scale_factor().unwrap_or(1.0);
+  let logical_w = size.width as f64 / scale;
+  if logical_w >= MIN_MAIN_W {
+    return;
+  }
+  let logical_h = size.height as f64 / scale;
+  let _ = w.set_size(tauri::LogicalSize::new(MIN_MAIN_W, logical_h));
+  println!("[RUST] main window widened to {MIN_MAIN_W}px (was {logical_w}px)");
+}
+
+/// Capture the main window frame in memory. `flush` stores it now; otherwise the write is debounced.
+fn record_main_geometry(app: &AppHandle, flush: bool) {
   if !app.state::<PersistMainWindow>().0.load(Ordering::SeqCst) {
     return;
   }
@@ -104,8 +187,30 @@ fn record_main_geometry(app: &AppHandle) {
     },
   };
   let next = MainWindowState { rect, maximized, fullscreen, monitor: geometry::monitor_name(&w) };
-  geometry::save_main(app, &next);
   *guard = Some(next);
+  drop(guard);
+  let generation = app.state::<GeometryWriter>().0.fetch_add(1, Ordering::SeqCst) + 1;
+  if flush {
+    write_main_geometry(app);
+    return;
+  }
+  let handle = app.clone();
+  std::thread::spawn(move || {
+    std::thread::sleep(std::time::Duration::from_millis(GEOMETRY_DEBOUNCE_MS));
+    if handle.state::<GeometryWriter>().0.load(Ordering::SeqCst) == generation {
+      write_main_geometry(&handle);
+    }
+  });
+}
+
+fn write_main_geometry(app: &AppHandle) {
+  if !app.state::<PersistMainWindow>().0.load(Ordering::SeqCst) {
+    return;
+  }
+  let snapshot = app.state::<MainGeometry>().0.lock().unwrap().clone();
+  if let Some(state) = snapshot {
+    geometry::save_main(app, &state);
+  }
 }
 
 #[tauri::command]
@@ -126,26 +231,38 @@ fn focus_window(app: AppHandle, label: String) -> bool {
 }
 
 #[tauri::command]
-fn write_text_file(path: String, contents: String) -> Result<(), String> {
-  std::fs::write(&path, contents).map_err(|e| e.to_string())
+async fn write_text_file(path: String, contents: String) -> Result<(), String> {
+  blocking::run(move || {
+    let _files = blocking::files();
+    std::fs::write(&path, contents).map_err(|e| e.to_string())
+  })
+  .await
 }
 
 #[tauri::command]
-fn remove_file(path: String) -> Result<(), String> {
-  let file = std::path::Path::new(&path);
-  if file.is_dir() {
-    return Err("not a file".to_string());
-  }
-  match std::fs::remove_file(file) {
-    Ok(()) => Ok(()),
-    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-    Err(err) => Err(err.to_string()),
-  }
+async fn remove_file(path: String) -> Result<(), String> {
+  blocking::run(move || {
+    let _files = blocking::files();
+    let file = std::path::Path::new(&path);
+    if file.is_dir() {
+      return Err("not a file".to_string());
+    }
+    match std::fs::remove_file(file) {
+      Ok(()) => Ok(()),
+      Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+      Err(err) => Err(err.to_string()),
+    }
+  })
+  .await
 }
 
 #[tauri::command]
-fn read_text_file(path: String) -> Result<String, String> {
-  std::fs::read_to_string(&path).map_err(|e| e.to_string())
+async fn read_text_file(path: String) -> Result<String, String> {
+  blocking::run(move || {
+    let _files = blocking::files();
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+  })
+  .await
 }
 
 #[tauri::command]
@@ -172,32 +289,47 @@ fn open_http_url(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn write_base64_file(path: String, contents: String) -> Result<(), String> {
-  use base64::Engine;
-  let bytes = base64::engine::general_purpose::STANDARD
-    .decode(contents.trim())
-    .map_err(|err| err.to_string())?;
-  if let Some(parent) = std::path::Path::new(&path).parent() {
-    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-  }
-  std::fs::write(&path, bytes).map_err(|err| err.to_string())
+async fn write_base64_file(path: String, contents: String) -> Result<(), String> {
+  blocking::run(move || {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+      .decode(contents.trim())
+      .map_err(|err| err.to_string())?;
+    let _files = blocking::files();
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+      std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    std::fs::write(&path, bytes).map_err(|err| err.to_string())
+  })
+  .await
 }
 
 #[tauri::command]
-fn read_base64_file(path: String) -> Result<String, String> {
-  use base64::Engine;
-  let bytes = std::fs::read(&path).map_err(|err| err.to_string())?;
-  Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+async fn read_base64_file(path: String) -> Result<String, String> {
+  blocking::run(move || {
+    use base64::Engine;
+    let bytes = {
+      let _files = blocking::files();
+      std::fs::read(&path).map_err(|err| err.to_string())?
+    };
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+  })
+  .await
 }
 
 #[tauri::command]
-fn project_db_exec(project_path: String, tool_prefix: String, sql: String, params: Option<Vec<serde_json::Value>>) -> Result<(), String> {
-  project_db::exec(&project_path, &tool_prefix, &sql, &params.unwrap_or_default())
+async fn project_db_exec(project_path: String, tool_prefix: String, sql: String, params: Option<Vec<serde_json::Value>>) -> Result<(), String> {
+  blocking::run(move || project_db::exec(&project_path, &tool_prefix, &sql, &params.unwrap_or_default())).await
 }
 
 #[tauri::command]
-fn project_db_query(project_path: String, tool_prefix: String, sql: String, params: Option<Vec<serde_json::Value>>) -> Result<Vec<serde_json::Value>, String> {
-  project_db::query(&project_path, &tool_prefix, &sql, &params.unwrap_or_default())
+async fn project_db_batch(project_path: String, tool_prefix: String, statements: Vec<project_db::BatchStatement>) -> Result<(), String> {
+  blocking::run(move || project_db::batch(&project_path, &tool_prefix, &statements)).await
+}
+
+#[tauri::command]
+async fn project_db_query(project_path: String, tool_prefix: String, sql: String, params: Option<Vec<serde_json::Value>>) -> Result<Vec<serde_json::Value>, String> {
+  blocking::run(move || project_db::query(&project_path, &tool_prefix, &sql, &params.unwrap_or_default())).await
 }
 
 /// Linux `document_dir` fails when xdg user dirs are unset. Fall back to `$HOME/Documents` and do not create it.
@@ -265,35 +397,46 @@ fn join_path(parent: String, name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn ensure_dir(path: String) -> Result<(), String> {
-  std::fs::create_dir_all(&path).map_err(|e| e.to_string())
+async fn ensure_dir(path: String) -> Result<(), String> {
+  blocking::run(move || std::fs::create_dir_all(&path).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn path_exists(path: String) -> bool {
-  std::path::Path::new(&path).exists()
+async fn path_exists(path: String) -> bool {
+  blocking::run(move || Ok(std::path::Path::new(&path).exists())).await.unwrap_or(false)
 }
 
 #[tauri::command]
-fn list_child_dirs(path: String) -> Result<Vec<String>, String> {
-  let mut names = Vec::new();
-  for entry in std::fs::read_dir(&path).map_err(|e| e.to_string())? {
-    let entry = entry.map_err(|e| e.to_string())?;
-    let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
-    if !is_dir {
-      continue;
+async fn list_child_dirs(path: String) -> Result<Vec<String>, String> {
+  blocking::run(move || {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(&path).map_err(|e| e.to_string())? {
+      let entry = entry.map_err(|e| e.to_string())?;
+      let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+      if !is_dir {
+        continue;
+      }
+      if let Some(name) = entry.file_name().to_str() {
+        names.push(name.to_string());
+      }
     }
-    if let Some(name) = entry.file_name().to_str() {
-      names.push(name.to_string());
-    }
-  }
-  names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
-  Ok(names)
+    names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    Ok(names)
+  })
+  .await
 }
 
 fn welcome_origin(app: &AppHandle, anchor: Option<&MainWindowState>) -> Option<(f64, f64)> {
-  let monitors = app.available_monitors().ok()?;
   let saved = anchor.map(|s| s.rect);
+  let Ok(monitors) = app.available_monitors() else {
+    return saved.map(|r| (r.x + (r.width - WELCOME_W) / 2.0, r.y + (r.height - WELCOME_H) / 2.0));
+  };
+  if monitors.is_empty() {
+    // The displays could not be enumerated (macOS reports an empty list while the display
+    // is asleep). Keep the welcome window where the project window was instead of
+    // centring it on an unknown screen.
+    return saved.map(|r| (r.x + (r.width - WELCOME_W) / 2.0, r.y + (r.height - WELCOME_H) / 2.0));
+  }
   let monitor = saved.and_then(|rect| {
     let cx = rect.x + rect.width / 2.0;
     let cy = rect.y + rect.height / 2.0;
@@ -327,7 +470,15 @@ fn place_project(app: &AppHandle, window: &tauri::WebviewWindow) {
   let saved = app.state::<MainGeometry>().0.lock().unwrap().clone();
   match saved {
     Some(state) => {
-      let (rect, _) = geometry::fit_on_screen(app, state.rect);
+      let (rect, moved) = geometry::fit_on_screen(app, state.rect);
+      println!(
+        "[RUST] main window at {},{} {}x{}{}",
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        if moved { " (was off-screen, moved onto the primary display)" } else { "" }
+      );
       let _ = window.set_size(tauri::LogicalSize::new(rect.width, rect.height));
       let _ = window.set_position(tauri::LogicalPosition::new(rect.x, rect.y));
       if state.maximized {
@@ -410,7 +561,8 @@ fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
           &PredefinedMenuItem::hide(app, None)?,
           &PredefinedMenuItem::hide_others(app, None)?,
           &PredefinedMenuItem::separator(app)?,
-          &PredefinedMenuItem::quit(app, None)?,
+          // The predefined item calls `terminate:` directly, which skips the flush. Route Cmd+Q through our handler.
+          &MenuItem::with_id(app, QUIT_ID, format!("Quit {}", pkg.name), true, Some("CmdOrCtrl+Q"))?,
         ],
       )?,
       #[cfg(not(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd")))]
@@ -452,6 +604,8 @@ fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
   app.on_menu_event(|app, event| {
     if event.id() == CLOSE_PROJECT_ID {
       let _ = app.emit("ek:close-project", ());
+    } else if event.id() == QUIT_ID && start_close_flush(app, true) {
+      app.exit(0);
     }
   });
   Ok(())
@@ -471,7 +625,7 @@ fn close_project_connections(paths: Vec<String>) {
 
 #[tauri::command]
 fn close_popout_windows(app: AppHandle) {
-  let labels: Vec<String> = app.webview_windows().keys().filter(|label| label.starts_with("popout-") || label.as_str() == "copilot-editor").cloned().collect();
+  let labels: Vec<String> = app.webview_windows().keys().filter(|label| label.starts_with("popout-")).cloned().collect();
   for label in labels {
     if let Some(window) = app.get_webview_window(&label) {
       let _ = window.destroy();
@@ -488,7 +642,7 @@ fn set_welcome_window(app: AppHandle, welcome: bool) {
   } else {
     place_project(&app, &window);
     app.state::<PersistMainWindow>().0.store(true, Ordering::SeqCst);
-    record_main_geometry(&app);
+    record_main_geometry(&app, true);
   }
 }
 
@@ -524,6 +678,8 @@ pub fn run() {
     .manage(PopoutQueue::default())
     .manage(MainGeometry::default())
     .manage(PersistMainWindow(AtomicBool::new(false)))
+    .manage(CloseFlush { flushed: AtomicBool::new(false), quit: AtomicBool::new(false) })
+    .manage(GeometryWriter(AtomicUsize::new(0)))
     .manage(LaunchMemory::default())
     .invoke_handler(tauri::generate_handler![
       log_line,
@@ -539,6 +695,7 @@ pub fn run() {
       write_base64_file,
       read_base64_file,
       project_db_exec,
+      project_db_batch,
       project_db_query,
       create_project_snapshot,
       list_project_snapshots,
@@ -554,13 +711,16 @@ pub fn run() {
       copilot_list_models,
       copilot_stop,
       copilot_chat_list,
-      copilot_chat_load,
-      copilot_chat_save,
+      copilot_chat_open,
+      copilot_chat_messages,
+      copilot_chat_delete,
+      copilot_message_append,
       copilot_module_chat_get,
       copilot_module_chat_set,
-      open_copilot_editor,
-      app_state_load,
-      app_state_save,
+      app_kv_all,
+      app_kv_get,
+      app_kv_set,
+      app_kv_delete,
       join_path,
       ensure_dir,
       path_exists,
@@ -570,7 +730,8 @@ pub fn run() {
       session_get,
       set_close_project_label,
       close_project_connections,
-      close_popout_windows
+      close_popout_windows,
+      finish_app_close
     ])
     .setup(move |app| {
       install_app_menu(app.handle())?;
@@ -579,13 +740,9 @@ pub fn run() {
       let mut main_builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("EasyKeeper")
         .visible(false)
-        .min_inner_size(480.0, 360.0);
-      match &saved {
-        Some(s) => {
-          let (r, moved) = geometry::fit_on_screen(app.handle(), s.rect);
-          println!("[RUST] project frame {:?} monitor={:?} -> {r:?}{}", s.rect, s.monitor, if moved { " (off-screen, moved to primary)" } else { "" });
-        }
-        None => {}
+        .min_inner_size(MIN_MAIN_W, 360.0);
+      if let Some(s) = &saved {
+        println!("[RUST] saved main frame {:?} on monitor {:?}", s.rect, s.monitor);
       }
       main_builder = main_builder.inner_size(WELCOME_W, WELCOME_H);
       if let Some((x, y)) = welcome_origin(app.handle(), saved.as_ref()) {
@@ -626,7 +783,7 @@ pub fn run() {
                 _ => (x, y),
               };
               let (r, moved) = geometry::fit_on_screen(&handle, Rect { x, y, width, height });
-              println!("[RUST] {label} position {},{}{}", r.x, r.y, if moved { " (off-screen, moved to primary)" } else { "" });
+              println!("[RUST] {label} position {},{}{}", r.x, r.y, if moved { " (was off-screen, moved onto the primary display)" } else { "" });
               b = b.inner_size(r.width, r.height).position(r.x, r.y);
             }
           }
@@ -673,15 +830,23 @@ pub fn run() {
 
       let h3 = app.handle().clone();
       main.on_window_event(move |ev| match ev {
-        WindowEvent::CloseRequested { .. } => {
-          record_main_geometry(&h3);
+        WindowEvent::CloseRequested { api, .. } => {
+          if !start_close_flush(&h3, false) {
+            api.prevent_close();
+            return;
+          }
+          record_main_geometry(&h3, true);
           for (label, w) in h3.webview_windows() {
             if label.starts_with("popout-") {
               let _ = w.destroy();
             }
           }
         }
-        WindowEvent::Moved(_) | WindowEvent::Resized(_) => record_main_geometry(&h3),
+        WindowEvent::Moved(_) => record_main_geometry(&h3, false),
+        WindowEvent::Resized(_) => {
+          clamp_main_width(&h3);
+          record_main_geometry(&h3, false);
+        }
         _ => {}
       });
 
@@ -706,8 +871,16 @@ pub fn run() {
 
       Ok(())
     })
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+    .build(tauri::generate_context!())
+    .expect("error while building tauri application")
+    .run(|app, event| {
+      // `app.exit()` and the non-macOS Quit item land here. Hold the exit until the frontend has flushed.
+      if let tauri::RunEvent::ExitRequested { api, .. } = &event {
+        if !start_close_flush(app, true) {
+          api.prevent_exit();
+        }
+      }
+    });
 }
 
 #[cfg(test)]

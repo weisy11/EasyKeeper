@@ -25,7 +25,7 @@ export function ListTrash({
       <div className="border-t border-border" />
       <button
         type="button"
-        className="flex h-7 w-full shrink-0 items-center gap-1 px-2 text-left text-[13px]"
+        className="flex h-7 w-full shrink-0 items-center gap-1 px-2 text-left text-sm"
         onClick={onToggle}
         onDragOver={(event) => {
           event.preventDefault();

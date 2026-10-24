@@ -1,3 +1,4 @@
+import { serial } from "@ek/tool-api";
 import { invoke } from "@tauri-apps/api/core";
 import { isTauri } from "@/lib/platform";
 import type { ProjectKind } from "./types";
@@ -58,10 +59,12 @@ export async function documentsDir(): Promise<string> {
   return "Documents";
 }
 
+/** Pure string join. The separator follows the parent (`\\` on Windows paths), so no round trip to Rust is needed. */
 export async function joinPath(parent: string, name: string): Promise<string> {
   if (!validFolderName(name)) throw new ProjectError("invalid-name");
-  if (isTauri) return invoke<string>("join_path", { parent, name: name.trim() });
-  return `${parent.replace(/\/+$/, "")}/${name.trim()}`;
+  const separator = parent.includes("\\") && !parent.includes("/") ? "\\" : "/";
+  const base = parent.replace(/[\\/]+$/, "");
+  return `${base}${separator}${name.trim()}`;
 }
 
 export async function ensureDir(path: string) {
@@ -76,9 +79,12 @@ export async function ensureDir(path: string) {
 
 /** Next free `scenario1` / `record1` name in `parent`. Does not create the directory. */
 export async function nextNumberedName(parent: string, prefix: "scenario" | "record"): Promise<string> {
+  // One directory listing instead of one existence check per candidate. A missing parent has no children yet.
+  const names = await listChildDirs(parent).catch(() => [] as string[]);
+  const taken = new Set(names.map((name) => name.toLowerCase()));
   for (let n = 1; n < 10000; n += 1) {
     const name = `${prefix}${n}`;
-    if (!(await pathExists(await joinPath(parent, name)))) return name;
+    if (!taken.has(name)) return name;
   }
   throw new ProjectError("exists");
 }
@@ -91,7 +97,7 @@ export async function pathExists(path: string): Promise<boolean> {
 
 async function writeText(path: string, contents: string) {
   if (isTauri) {
-    await invoke("write_text_file", { path, contents });
+    await serial(path, () => invoke("write_text_file", { path, contents }));
     return;
   }
   const fs = browserFs();

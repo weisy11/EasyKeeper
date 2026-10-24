@@ -1,7 +1,6 @@
 import { ImagePlus, Plus, User, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { loadImageObjectUrl, savePastedImage } from "../../../../scenario/frontend/src/storage";
-import type { ToolPanelProps } from "@ek/tool-api";
+import { savePastedImage, useProjectImage, type ToolPanelProps } from "@ek/tool-api";
 import {
   canSaveInvestigators,
   deleteInvestigator,
@@ -171,8 +170,8 @@ export function CharacterPanel({ projectPath }: ToolPanelProps) {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background text-[13px] text-foreground">
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2 text-xs font-semibold">
+    <div className="flex h-full min-h-0 flex-col bg-background text-sm text-foreground">
+      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2 text-base font-semibold">
         <span className="min-w-0 flex-1 truncate">{t("investigators")}</span>
         <button
           type="button"
@@ -210,7 +209,7 @@ export function CharacterPanel({ projectPath }: ToolPanelProps) {
       {addMenu && (
         <div
           data-investigator-add-menu=""
-          className="fixed z-50 min-w-40 -translate-x-full rounded-md border border-border bg-popover py-1 text-[13px] text-popover-foreground shadow-md"
+          className="fixed z-50 min-w-40 -translate-x-full rounded-md border border-border bg-popover py-1 text-sm text-popover-foreground shadow-md"
           style={{ left: addMenu.x, top: addMenu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
@@ -235,7 +234,7 @@ export function CharacterPanel({ projectPath }: ToolPanelProps) {
       {menu && (
         <div
           data-investigator-menu=""
-          className="fixed z-50 min-w-36 rounded-md border border-border bg-popover py-1 text-[13px] text-popover-foreground shadow-md"
+          className="fixed z-50 min-w-36 rounded-md border border-border bg-popover py-1 text-sm text-popover-foreground shadow-md"
           style={{ left: menu.x, top: menu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
@@ -272,7 +271,7 @@ export function CharacterPanel({ projectPath }: ToolPanelProps) {
         </div>
       )}
       {exporting && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-6" onPointerDown={() => setExporting(false)}>
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-6">
           <div
             role="dialog"
             aria-label={t("exportInvestigators")}
@@ -280,7 +279,7 @@ export function CharacterPanel({ projectPath }: ToolPanelProps) {
             className="flex max-h-full w-[min(360px,100%)] flex-col rounded-md border border-border bg-background shadow-lg"
             onPointerDown={(event) => event.stopPropagation()}
           >
-            <h2 className="border-b border-border px-3 py-2 text-sm font-semibold">{t("exportInvestigators")}</h2>
+            <h2 className="border-b border-border px-3 py-2 text-base font-semibold">{t("exportInvestigators")}</h2>
             <div className="min-h-0 flex-1 overflow-auto py-1">
               {people.length === 0 ? <p className="px-3 py-2 text-muted-foreground">{t("exportEmpty")}</p> : people.map((person) => (
                 <label key={person.id} className="flex h-7 cursor-default items-center gap-2 px-3 hover:bg-muted">
@@ -315,7 +314,7 @@ export function CharacterPanel({ projectPath }: ToolPanelProps) {
         <CompactSheet projectPath={projectPath} locale={locale} investigator={current} onChange={update} onClose={keep} />
       )}
       {current && (mode === "edit" || mode === "brief") && (
-        <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-6" onPointerDown={keep}>
+        <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-6">
           <div
             role="dialog"
             aria-label={current.name.trim() || t("untitled")}
@@ -372,7 +371,7 @@ function CompactSheet({
         role="dialog"
         aria-label={investigator.name.trim() || t("untitled")}
         data-investigator-sheet="compact"
-        className="relative flex max-h-full w-[min(660px,100%)] flex-col rounded-md border border-border bg-background text-[13px] shadow-lg"
+        className="relative flex max-h-full w-[min(660px,100%)] flex-col rounded-md border border-border bg-background text-sm shadow-lg"
         onPointerDown={(event) => event.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-end border-b border-border px-3 py-2">
@@ -412,17 +411,17 @@ function CompactSheet({
             </div>
           </div>
           <div className="mt-4 border-t border-border pt-3">
-            <div className="text-[14px] text-muted-foreground">{t("skills")}</div>
-            <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[16px]">
+            <div className="text-base text-muted-foreground">{t("skills")}</div>
+            <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-base">
               {investigator.skills.length === 0 ? <span>—</span> : investigator.skills.map((skill, index) => (
                 <span key={`${skill.name}-${index}`}>{skill.name} {skill.value}</span>
               ))}
             </div>
           </div>
           <div className="mt-4 border-t border-border pt-3">
-            <div className="text-[14px] text-muted-foreground">{t("weapons")}</div>
+            <div className="text-base text-muted-foreground">{t("weapons")}</div>
             <div className="mt-1 space-y-2">
-              {investigator.weapons.length === 0 ? <span className="text-[16px]">—</span> : investigator.weapons.map((weapon, index) => (
+              {investigator.weapons.length === 0 ? <span className="text-base">—</span> : investigator.weapons.map((weapon, index) => (
                 <div key={`${weapon.name}-${index}`} className="flex flex-wrap gap-x-4 gap-y-1">
                   <Fact label={t("weaponName")} value={weapon.name} />
                   <Fact label={t("weaponSkill")} value={weapon.skill} />
@@ -444,8 +443,8 @@ function CompactSheet({
 function Fact({ label, value }: { label: string; value: string }) {
   return (
     <span className="inline-flex min-w-0 items-baseline gap-1">
-      <span className="text-[14px] text-muted-foreground">{label}</span>
-      <span className="text-[16px]">{value.trim() ? value : "—"}</span>
+      <span className="text-base text-muted-foreground">{label}</span>
+      <span className="text-base">{value.trim() ? value : "—"}</span>
     </span>
   );
 }
@@ -463,14 +462,14 @@ function Vital({
 }) {
   return (
     <span className="inline-flex items-baseline gap-1 whitespace-nowrap">
-      <span className="shrink-0 text-[14px] text-muted-foreground">{label}</span>
+      <span className="shrink-0 text-base text-muted-foreground">{label}</span>
       <input
         type="number"
         min={0}
         step={1}
         value={value}
         aria-label={label}
-        className="w-12 max-w-12 shrink border-b border-border bg-transparent text-[16px] outline-none"
+        className="w-12 max-w-12 shrink border-b border-border bg-transparent text-base outline-none"
         onChange={(event) => {
           const raw = event.target.value;
           if (raw !== "" && !/^\d+$/.test(raw)) return;
@@ -508,7 +507,7 @@ function Sheet({
   return (
     <div className="mx-auto flex max-w-[1080px] flex-col gap-4 p-4" data-character-sheet={investigator.id} data-character-form={brief ? "brief" : "full"}>
       <section className="rounded-md border border-border p-3">
-        <h2 className="mb-2 text-xs font-semibold text-muted-foreground">{t("about")}</h2>
+        <h2 className="mb-2 text-base font-semibold text-muted-foreground">{t("about")}</h2>
         <div className="grid grid-cols-[minmax(0,1fr)_7.5rem] items-stretch gap-3">
         <div className="grid grid-cols-6 gap-2">
           <Field className="col-span-2" label={t("name")} value={investigator.name} onChange={(name) => set({ name })} />
@@ -524,7 +523,7 @@ function Sheet({
       </section>
 
       <section className="rounded-md border border-border p-3">
-        <h2 className="mb-2 text-xs font-semibold text-muted-foreground">{t("characteristics")}</h2>
+        <h2 className="mb-2 text-base font-semibold text-muted-foreground">{t("characteristics")}</h2>
         <div className="grid grid-cols-8 gap-2">
           {STATS.map((key) => (
             <NumberField key={key} label={t(key)} value={investigator[key]} onChange={(value) => set({ [key]: value })} />
@@ -535,14 +534,14 @@ function Sheet({
             <NumberField key={key} label={t(key)} value={investigator[key]} onChange={(value) => set({ [key]: value })} />
           ))}
           <NumberField label={t("mov")} value={investigator.mov} onChange={(mov) => set({ mov })} />
-          <NumberField label={t("build")} value={investigator.build} onChange={(build) => set({ build })} />
+          <NumberField label={t("build")} value={investigator.build} allowNegative onChange={(build) => set({ build })} />
           <Field label={t("damage")} value={investigator.damage} onChange={(damage) => set({ damage })} />
           <NumberField label={t("dodge")} value={investigator.dodge} onChange={(dodge) => set({ dodge })} />
         </div>
       </section>
 
       <section className="rounded-md border border-border p-3">
-        <h2 className="mb-2 text-xs font-semibold text-muted-foreground">{t("skills")}</h2>
+        <h2 className="mb-2 text-base font-semibold text-muted-foreground">{t("skills")}</h2>
         <div className="grid grid-cols-5 gap-x-4 gap-y-3">
           {investigator.skills.map((skill, index) => (
             <div key={index} className="flex min-w-0 items-center gap-1">
@@ -593,8 +592,8 @@ function Sheet({
       </section>
 
       <section className="rounded-md border border-border p-3">
-        <h2 className="mb-2 text-xs font-semibold text-muted-foreground">{t("weapons")}</h2>
-        <div className="grid grid-cols-[1.2fr_0.7fr_0.8fr_0.6fr_0.7fr_0.7fr_0.7fr_auto] gap-1 text-[11px] text-muted-foreground">
+        <h2 className="mb-2 text-base font-semibold text-muted-foreground">{t("weapons")}</h2>
+        <div className="grid grid-cols-[1.2fr_0.7fr_0.8fr_0.6fr_0.7fr_0.7fr_0.7fr_auto] gap-1 text-base text-muted-foreground">
           <span>{t("weaponName")}</span>
           <span>{t("weaponSkill")}</span>
           <span>{t("weaponDamage")}</span>
@@ -641,7 +640,7 @@ function Sheet({
       {!brief && <Area label={t("story")} value={investigator.story} onChange={(story) => set({ story })} />}
 
       {!brief && <section className="rounded-md border border-border p-3">
-        <h2 className="mb-2 text-xs font-semibold text-muted-foreground">{t("backstory")}</h2>
+        <h2 className="mb-2 text-base font-semibold text-muted-foreground">{t("backstory")}</h2>
         <div className="grid grid-cols-2 gap-2">
           {BACKSTORY.map((key) => (
             <Area key={key} label={t(key)} value={investigator[key]} onChange={(value) => set({ [key]: value })} />
@@ -655,7 +654,7 @@ function Sheet({
       {!brief && <Area label={t("gear")} value={investigator.gear} onChange={(gear) => set({ gear })} />}
 
       {!brief && <section className="rounded-md border border-border p-3">
-        <h2 className="mb-2 text-xs font-semibold text-muted-foreground">{t("wealth")}</h2>
+        <h2 className="mb-2 text-base font-semibold text-muted-foreground">{t("wealth")}</h2>
         <div className="grid grid-cols-2 gap-2">
           <Field label={t("cash")} value={investigator.cash} onChange={(cash) => set({ cash })} />
           <Field label={t("assets")} value={investigator.assets} onChange={(assets) => set({ assets })} />
@@ -663,8 +662,8 @@ function Sheet({
       </section>}
 
       {!brief && <section className="rounded-md border border-border p-3">
-        <h2 className="mb-2 text-xs font-semibold text-muted-foreground">{t("fellows")}</h2>
-        <div className="grid grid-cols-[1fr_1fr_auto] gap-1 text-[11px] text-muted-foreground">
+        <h2 className="mb-2 text-base font-semibold text-muted-foreground">{t("fellows")}</h2>
+        <div className="grid grid-cols-[1fr_1fr_auto] gap-1 text-base text-muted-foreground">
           <span>{t("playerName")}</span>
           <span>{t("investigatorName")}</span>
           <span />
@@ -772,7 +771,7 @@ function PortraitPicker({
         title={label}
         aria-label={label}
         data-portrait=""
-        className={`grid h-full w-full place-items-center overflow-hidden rounded-md border text-xs text-muted-foreground hover:bg-muted ${src ? "border-solid border-border" : "border-dashed border-border"}`}
+        className={`grid h-full w-full place-items-center overflow-hidden rounded-md border text-sm text-muted-foreground hover:bg-muted ${src ? "border-solid border-border" : "border-dashed border-border"}`}
         onClick={() => inputRef.current?.click()}
       >
         {src ? <StoredPortrait projectPath={projectPath} src={src} className="h-full w-full object-cover" /> : (
@@ -798,51 +797,45 @@ function PortraitPicker({
 }
 
 function StoredPortrait({ projectPath, src, className }: { projectPath: string; src: string; className: string }) {
-  const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => {
-    let objectUrl: string | null = null;
-    let cancelled = false;
-    void loadImageObjectUrl(projectPath, src).then((next) => {
-      if (cancelled) {
-        if (next) URL.revokeObjectURL(next);
-        return;
-      }
-      objectUrl = next;
-      setUrl(next);
-    });
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [projectPath, src]);
-  return url ? <img src={url} alt="" className={className} /> : null;
+  const { url, onError } = useProjectImage(projectPath, src);
+  return url ? <img src={url} alt="" className={className} onError={onError} /> : null;
 }
 
 function Field({ label, value, onChange, className = "" }: { label: string; value: string; onChange: (value: string) => void; className?: string }) {
   return (
     <label className={`block min-w-0 ${className}`}>
-      <span className="mb-1 block text-[11px] text-muted-foreground">{label}</span>
+      <span className="mb-1 block text-base text-muted-foreground">{label}</span>
       <input value={value} className="h-8 w-full rounded-md border border-border bg-background px-2" onChange={(event) => onChange(event.target.value)} />
     </label>
   );
 }
 
-function NumberField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
+function NumberField({ label, value, onChange, allowNegative = false }: { label: string; value: number; onChange: (value: number) => void; allowNegative?: boolean }) {
+  const shown = Number.isFinite(value) ? value : 0;
+  // The text is kept locally so a lone "-" can survive until the digits arrive.
+  const [text, setText] = useState(String(shown));
+  useEffect(() => {
+    setText((current) => (current !== "" && wholeNumber(current) === shown ? current : String(shown)));
+  }, [shown]);
   return (
     <label className="block min-w-0">
-      <span className="mb-1 block text-[11px] text-muted-foreground">{label}</span>
+      <span className="mb-1 block text-base text-muted-foreground">{label}</span>
       <input
-        value={Number.isFinite(value) ? String(value) : "0"}
-        inputMode="numeric"
+        value={text}
+        inputMode={allowNegative ? "text" : "numeric"}
         className="h-8 w-full rounded-md border border-border bg-background px-2"
         onChange={(event) => {
           const raw = event.target.value.trim();
-          if (raw === "" || raw === "-") {
+          if (raw === "" || (raw === "-" && allowNegative)) {
+            setText(raw);
             onChange(0);
             return;
           }
           const next = Number(raw);
-          if (Number.isFinite(next)) onChange(Math.trunc(next));
+          if (!Number.isFinite(next) || (!allowNegative && next < 0)) return;
+          const whole = Math.trunc(next);
+          setText(/^-?\d+$/.test(raw) ? raw : String(whole));
+          onChange(whole);
         }}
       />
     </label>
@@ -852,7 +845,7 @@ function NumberField({ label, value, onChange }: { label: string; value: number;
 function Area({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return (
     <label className="block min-w-0">
-      <span className="mb-1 block text-[11px] text-muted-foreground">{label}</span>
+      <span className="mb-1 block text-base text-muted-foreground">{label}</span>
       <textarea value={value} rows={3} className="w-full resize-y rounded-md border border-border bg-background px-2 py-1" onChange={(event) => onChange(event.target.value)} />
     </label>
   );

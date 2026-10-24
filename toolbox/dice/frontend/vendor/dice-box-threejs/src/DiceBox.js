@@ -38,7 +38,7 @@ class DiceBox {
 	constructor(element_container, options = {}) {
 		//private variables
 		this.initialized = false
-		this.container = document.querySelector(element_container);
+		this.container = typeof element_container === "string" ? document.querySelector(element_container) : element_container;
 		this.dimensions = new THREE.Vector2(this.container.clientWidth, this.container.clientHeight)
 		this.adaptive_timestep = false;
 		this.last_time = 0;

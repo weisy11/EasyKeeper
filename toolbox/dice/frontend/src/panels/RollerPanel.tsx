@@ -57,7 +57,7 @@ function disposeDiceBox(box: DiceBoxInstance | null | undefined) {
   }
 }
 
-type DiceBoxCtor = new (selector: string, opts?: Record<string, unknown>) => DiceBoxInstance;
+type DiceBoxCtor = new (container: string | HTMLElement, opts?: Record<string, unknown>) => DiceBoxInstance;
 
 type LastResult = { label: string; total: number };
 
@@ -228,7 +228,8 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
         const DiceBox = (mod.default ?? mod) as DiceBoxCtor;
         if (cancelled) return;
 
-        const box = new DiceBox(`#${stageId}`, {
+        // The element, not a selector: the panel may live in a pop-out window's document.
+        const box = new DiceBox(stage, {
           assetPath: assetPath(),
           sounds: true,
           volume: 80,

@@ -8,7 +8,9 @@ export const characterTool = defineTool({
   title: { zh: "角色", en: "Character" },
   icon: UserIcon as ComponentType<{ className?: string }>,
   region: "center",
-  minWidth: 720,
+  // Same floor as the scenario tool: 480px for this column plus 240px for the side
+  // column keeps the fixed two-column workspace at 720px.
+  minWidth: 480,
   minHeight: 420,
   dependencies: [],
   panels: [{ id: "sheet", component: CharacterPanel }],

@@ -2,8 +2,9 @@
 //! The API key is a header only. It is never written into the JSON body.
 
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
 #[derive(Clone)]
@@ -27,7 +28,8 @@ impl Stop {
     }
 }
 
-const MAX_OUTPUT_TOKENS: u64 = 2048;
+/// Output budget for ordinary replies.
+pub const MAX_OUTPUT_TOKENS: u64 = 2048;
 
 #[derive(Clone)]
 pub struct Turn {
@@ -43,7 +45,7 @@ pub struct Prepared {
     pub body: Value,
 }
 
-pub fn prepare(format: &str, address: &str, model: &str, turns: &[Turn]) -> Result<Prepared, String> {
+pub fn prepare(format: &str, address: &str, model: &str, turns: &[Turn], max_output_tokens: u64) -> Result<Prepared, String> {
     let address = address.trim().trim_end_matches('/');
     if address.is_empty() {
         return Err("no-address".into());
@@ -64,7 +66,7 @@ pub fn prepare(format: &str, address: &str, model: &str, turns: &[Turn]) -> Resu
             body: json!({
                 "model": model,
                 "messages": message_list(turns),
-                "max_tokens": MAX_OUTPUT_TOKENS,
+                "max_tokens": max_output_tokens,
                 "stream": true,
             }),
         }),
@@ -76,7 +78,7 @@ pub fn prepare(format: &str, address: &str, model: &str, turns: &[Turn]) -> Resu
             body: json!({
                 "model": model,
                 "input": responses_input(turns),
-                "max_output_tokens": MAX_OUTPUT_TOKENS,
+                "max_output_tokens": max_output_tokens,
                 "stream": true,
             }),
         }),
@@ -88,7 +90,7 @@ pub fn prepare(format: &str, address: &str, model: &str, turns: &[Turn]) -> Resu
             body: json!({
                 "model": model,
                 "input": interactions_input(turns),
-                "generation_config": { "max_output_tokens": MAX_OUTPUT_TOKENS },
+                "generation_config": { "max_output_tokens": max_output_tokens },
                 "stream": true,
             }),
         }),
@@ -99,7 +101,7 @@ pub fn prepare(format: &str, address: &str, model: &str, turns: &[Turn]) -> Resu
             extra_headers: vec![("anthropic-version", "2023-06-01")],
             body: json!({
                 "model": model,
-                "max_tokens": MAX_OUTPUT_TOKENS,
+                "max_tokens": max_output_tokens,
                 "messages": message_list(turns),
                 "stream": true,
             }),
@@ -116,8 +118,48 @@ pub struct OutboundProxy {
     pub password: String,
 }
 
-fn http_client(timeout_secs: u64, proxy: Option<&OutboundProxy>) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(timeout_secs));
+/// How long a request may take in total, or, for streams, how long the stream may stay silent.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Deadline {
+    /// Whole request, from connect to last byte.
+    Total(u64),
+    /// Connect limit plus an idle limit between body chunks. A long stream never times out while data keeps arriving.
+    Stream { connect_secs: u64, idle_secs: u64 },
+}
+
+/// One `reqwest::Client` per deadline and proxy setting. Building a client sets up a TLS
+/// config and a connection pool, so reusing it keeps connections warm across calls.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ClientKey {
+    deadline: Deadline,
+    proxy: Option<(String, String, u16, String, String)>,
+}
+
+static CLIENTS: Mutex<Option<HashMap<ClientKey, reqwest::Client>>> = Mutex::new(None);
+
+fn http_client(deadline: Deadline, proxy: Option<&OutboundProxy>) -> Result<reqwest::Client, String> {
+    let key = ClientKey {
+        deadline,
+        proxy: proxy.map(|p| (p.protocol.clone(), p.host.clone(), p.port, p.username.clone(), p.password.clone())),
+    };
+    if let Some(client) = CLIENTS.lock().ok().and_then(|guard| guard.as_ref().and_then(|map| map.get(&key).cloned())) {
+        return Ok(client);
+    }
+    let client = build_client(deadline, proxy)?;
+    if let Ok(mut guard) = CLIENTS.lock() {
+        guard.get_or_insert_with(HashMap::new).insert(key, client.clone());
+    }
+    Ok(client)
+}
+
+fn build_client(deadline: Deadline, proxy: Option<&OutboundProxy>) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder();
+    builder = match deadline {
+        Deadline::Total(secs) => builder.timeout(std::time::Duration::from_secs(secs)),
+        Deadline::Stream { connect_secs, idle_secs } => builder
+            .connect_timeout(std::time::Duration::from_secs(connect_secs))
+            .read_timeout(std::time::Duration::from_secs(idle_secs)),
+    };
     if let Some(proxy) = proxy {
         let scheme = if proxy.protocol == "socks5" { "socks5h" } else { "http" };
         let mut node = reqwest::Proxy::all(format!("{scheme}://{}:{}", proxy.host, proxy.port)).map_err(|_| "bad-proxy".to_string())?;
@@ -126,7 +168,20 @@ fn http_client(timeout_secs: u64, proxy: Option<&OutboundProxy>) -> Result<reqwe
         }
         builder = builder.proxy(node);
     }
-    builder.build().map_err(|_| "call-failed".to_string())
+    builder.build().map_err(|err| failure("call-failed", &err.to_string(), ""))
+}
+
+const FAILURE_DETAIL_CHARS: usize = 200;
+
+/// `code:detail`, where the UI maps `code` to a message and shows `detail` as-is.
+/// The detail is redacted, flattened to one line and capped so a long error page stays readable.
+fn failure(code: &str, detail: &str, api_key: &str) -> String {
+    let flat = redact(detail, api_key).split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        return code.to_string();
+    }
+    let short: String = flat.chars().take(FAILURE_DETAIL_CHARS).collect();
+    format!("{code}:{short}")
 }
 
 pub async fn complete(
@@ -135,18 +190,19 @@ pub async fn complete(
     api_key: &str,
     model: &str,
     turns: &[Turn],
+    max_output_tokens: u64,
     proxy: Option<&OutboundProxy>,
     mut on_delta: impl FnMut(&str, &str),
     stop: Stop,
 ) -> Result<String, String> {
-    let prepared = prepare(format, address, model, turns)?;
+    let prepared = prepare(format, address, model, turns, max_output_tokens)?;
     if api_key.is_empty() {
         return Err("no-key".into());
     }
     if stop.cancelled() {
         return Ok(String::new());
     }
-    let client = http_client(120, proxy)?;
+    let client = http_client(Deadline::Stream { connect_secs: 30, idle_secs: 120 }, proxy)?;
     let mut request = client.post(&prepared.url).header("content-type", "application/json");
     if prepared.bearer {
         request = request.header("authorization", format!("Bearer {api_key}"));
@@ -161,12 +217,11 @@ pub async fn complete(
         .json(&prepared.body)
         .send()
         .await
-        .map_err(|_| "call-failed".to_string())?;
+        .map_err(|err| failure("call-failed", &err.to_string(), api_key))?;
     let status = response.status();
     if !status.is_success() {
-        let text = redact(&response.text().await.unwrap_or_default(), api_key);
-        let _ = text;
-        return Err(format!("http {}", status.as_u16()));
+        let text = response.text().await.unwrap_or_default();
+        return Err(failure(&format!("http {}", status.as_u16()), &text, api_key));
     }
     let mut response = response;
     let mut pending = SsePending::default();
@@ -183,7 +238,7 @@ pub async fn complete(
             _ = stop.notify.notified() => return Ok(collected),
             chunk = response.chunk() => chunk,
         };
-        let chunk = chunk.map_err(|_| "call-failed".to_string())?;
+        let chunk = chunk.map_err(|err| failure("call-failed", &err.to_string(), api_key))?;
         let Some(chunk) = chunk else { break };
         buf.extend_from_slice(&chunk);
         while let Some(pos) = buf.iter().position(|byte| *byte == b'\n') {
@@ -628,7 +683,7 @@ pub async fn list_models(format: &str, address: &str, vendor: &str, api_key: &st
         return Err("no-key".into());
     }
     let url = model_list_url(format, address, vendor)?;
-    let client = http_client(30, proxy).map_err(|_| "list-failed".to_string())?;
+    let client = http_client(Deadline::Total(30), proxy).map_err(|err| err.replacen("call-failed", "list-failed", 1))?;
     let mut request = client.get(&url);
     if format == "interactions" {
         request = request.header("x-goog-api-key", api_key);
@@ -638,11 +693,11 @@ pub async fn list_models(format: &str, address: &str, vendor: &str, api_key: &st
             request = request.header("x-api-key", api_key);
         }
     }
-    let response = request.send().await.map_err(|_| "list-failed".to_string())?;
+    let response = request.send().await.map_err(|err| failure("list-failed", &err.to_string(), api_key))?;
     let status = response.status();
-    let text = redact(&response.text().await.map_err(|_| "list-failed".to_string())?, api_key);
+    let text = redact(&response.text().await.map_err(|err| failure("list-failed", &err.to_string(), api_key))?, api_key);
     if !status.is_success() {
-        return Err(format!("http {}", status.as_u16()));
+        return Err(failure(&format!("http {}", status.as_u16()), &text, api_key));
     }
     let value: Value = serde_json::from_str(&text).map_err(|_| "bad-response".to_string())?;
     let parse_as = if vendor == "deepseek" && format == "messages" { "chat" } else { format };
@@ -675,7 +730,7 @@ mod tests {
             ("messages", "https://api.minimax.cn/anthropic", "/v1/messages"),
         ];
         for (format, address, suffix) in cases {
-            let prepared = prepare(format, address, "MiniMax-M3", &turns).unwrap();
+            let prepared = prepare(format, address, "MiniMax-M3", &turns, MAX_OUTPUT_TOKENS).unwrap();
             assert!(prepared.url.ends_with(suffix), "{}", prepared.url);
             assert!(!prepared.body.to_string().contains(key));
         }

@@ -1,4 +1,4 @@
-import { useEditor, EditorContent, NodeViewWrapper, ReactNodeViewRenderer } from "@tiptap/react";
+import { useEditor, useEditorState, EditorContent, NodeViewWrapper, ReactNodeViewRenderer } from "@tiptap/react";
 import type { ReactNodeViewProps } from "@tiptap/react";
 import type { Editor, JSONContent } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
@@ -7,8 +7,9 @@ import Placeholder from "@tiptap/extension-placeholder";
 import { Color, FontFamily, TextStyle } from "@tiptap/extension-text-style";
 import { Highlight } from "@tiptap/extension-highlight";
 import { FindAndReplace } from "@tiptap/extension-find-and-replace";
-import { Link2, List as ListIcon, ListOrdered } from "lucide-react";
+import { Link2, List as ListIcon, ListOrdered, X } from "lucide-react";
 import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { reportStatus, savePastedImage, useProjectImage } from "@ek/tool-api";
 import { readActorIndex, readArticles, subscribeActorIndex, subscribeArticles, type ActorIndexEntry } from "../articleStore";
 import type { ScenarioArticle, ScenarioTreeNode } from "../db";
 import { EntityLink, entityKind, entityLinkModifier, openEntityLink, type EntityKind } from "../entityLink";
@@ -16,10 +17,46 @@ import { readSceneCatalog, subscribeSceneCatalog, type SceneCatalog } from "../s
 import { scenarioT, type ScenarioLocale, type ScenarioStringKey } from "../i18n";
 import { useScenarioLocale } from "../locale";
 import { ProjectPath } from "../projectPath";
-import { loadImageObjectUrl, readPage, savePastedImage, writePage } from "../storage";
+import { readPage, writePage } from "../storage";
 import "../editor.css";
 
 const EMPTY_DOC: JSONContent = { type: "doc", content: [{ type: "paragraph" }] };
+
+const SAVE_RETRY_MS = 3000;
+/** A failed save is retried this many times before the page is left dirty for the next edit. */
+const SAVE_ATTEMPTS = 3;
+const PASTE_ERROR_TTL_MS = 10_000;
+
+function errorText(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function pageTitle(pageId: string) {
+  const catalog = readSceneCatalog();
+  const stack = [...catalog.nodes, ...catalog.trash];
+  while (stack.length) {
+    const node = stack.pop()!;
+    if (node.id === pageId) return node.title || pageId;
+    stack.push(...node.children);
+  }
+  return pageId;
+}
+
+/** One status-bar line per page and failure kind; repeated failures update it instead of stacking. */
+function reportPageError(title: string, error: unknown, pageId: string, kind: "save" | "paste") {
+  console.error(`[ek.scenario] ${title} (${pageId})`, error);
+  reportStatus({
+    key: `ek.scenario.page.${pageId}.${kind}`,
+    level: "error",
+    text: `${title} · ${pageTitle(pageId)}`,
+    detail: errorText(error),
+    ttlMs: kind === "paste" ? PASTE_ERROR_TTL_MS : undefined,
+  });
+}
+
+function clearPageError(pageId: string) {
+  reportStatus({ key: `ek.scenario.page.${pageId}.save`, text: null });
+}
 
 const storedImage = Image.extend({
   addNodeView() {
@@ -68,26 +105,9 @@ function imageFiles(event: ClipboardEvent) {
 function StoredImage({ node }: ReactNodeViewProps) {
   const projectPath = useContext(ProjectPath);
   const src = String(node.attrs.src ?? "");
-  const [url, setUrl] = useState<string | null>(null);
+  const { url, onError } = useProjectImage(projectPath, src);
 
-  useEffect(() => {
-    let objectUrl: string | null = null;
-    let cancelled = false;
-    void loadImageObjectUrl(projectPath, src).then((next) => {
-      if (cancelled) {
-        if (next) URL.revokeObjectURL(next);
-        return;
-      }
-      objectUrl = next;
-      setUrl(next);
-    });
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [projectPath, src]);
-
-  return <NodeViewWrapper>{url ? <img src={url} alt="" /> : null}</NodeViewWrapper>;
+  return <NodeViewWrapper>{url ? <img src={url} alt="" onError={onError} /> : null}</NodeViewWrapper>;
 }
 
 export function BodyEditor({ projectPath, pageId, editable }: { projectPath: string; pageId: string; editable: boolean }) {
@@ -98,18 +118,23 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
   const [replaceTerm, setReplaceTerm] = useState("");
   const editorRef = useRef<Editor | null>(null);
   const projectRef = useRef(projectPath);
+  const pageRef = useRef(pageId);
   const editableRef = useRef(editable);
   projectRef.current = projectPath;
+  pageRef.current = pageId;
   editableRef.current = editable;
   const ready = useRef(false);
   const dirty = useRef(false);
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
   const surfaceRef = useRef<HTMLDivElement>(null);
   const editor = useEditor({
     editable,
     extensions: [
       StarterKit.configure({ heading: { levels: [...HEADING_LEVELS] } }),
       storedImage,
-      Placeholder.configure({ placeholder: t("placeholder") }),
+      // Read the locale at render time so the hint follows language switches.
+      Placeholder.configure({ placeholder: () => scenarioT(localeRef.current, "placeholder") }),
       TextStyle,
       FontFamily,
       Color,
@@ -142,8 +167,14 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
         if (!editableRef.current || !current || !root || files.length === 0) return false;
         void (async () => {
           for (const file of files) {
-            const src = await savePastedImage(root, file);
-            current.chain().focus().setImage({ src }).run();
+            try {
+              const src = await savePastedImage(root, file);
+              // The scene may have changed while the file was being written.
+              if (current.isDestroyed || editorRef.current !== current) return;
+              current.chain().focus().setImage({ src }).run();
+            } catch (error) {
+              reportPageError(scenarioT(localeRef.current, "pasteImageFailed"), error, pageRef.current, "paste");
+            }
           }
         })();
         return true;
@@ -151,7 +182,22 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
     },
     content: EMPTY_DOC,
   });
-  const [, setTick] = useState(0);
+  // Re-render the toolbar only when one of these values changes, not on every keystroke.
+  const toolbar = useEditorState({
+    editor,
+    selector: ({ editor: current }) => ({
+      block: blockLevel(current),
+      bold: current?.isActive("bold") ?? false,
+      italic: current?.isActive("italic") ?? false,
+      strike: current?.isActive("strike") ?? false,
+      code: current?.isActive("code") ?? false,
+      bullet: current?.isActive("bulletList") ?? false,
+      ordered: current?.isActive("orderedList") ?? false,
+      font: fontValue(current),
+      findTotal: (current?.storage.findAndReplace?.results ?? []).length as number,
+      findIndex: (current?.storage.findAndReplace?.currentIndex ?? 0) as number,
+    }),
+  });
 
   useEffect(() => {
     const surface = surfaceRef.current;
@@ -171,7 +217,8 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
   }, []);
 
   useEffect(() => {
-    editor?.setEditable(editable);
+    // Typing is blocked until the page content has arrived; otherwise those keystrokes would never be saved.
+    editor?.setEditable(editable && ready.current, false);
     if (!editable) {
       setFindOpen(false);
       editor?.commands.clearSearch();
@@ -179,15 +226,23 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
   }, [editor, editable]);
 
   useEffect(() => {
+    if (!editor) return;
+    // Placeholder text is computed lazily; a no-op transaction makes it re-render in the new language.
+    editor.view.dispatch(editor.state.tr);
+  }, [editor, locale]);
+
+  useEffect(() => {
     editorRef.current = editor;
     ready.current = false;
     dirty.current = false;
     if (!editor) return;
+    editor.setEditable(false, false);
     let cancelled = false;
     void readPage(projectPath, pageId).then((doc) => {
       if (cancelled) return;
       editor.commands.setContent(doc ?? EMPTY_DOC, { emitUpdate: false });
       ready.current = true;
+      editor.setEditable(editableRef.current, false);
     });
     return () => {
       cancelled = true;
@@ -196,15 +251,40 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
 
   useEffect(() => {
     if (!editor || !editable) return;
+    let timer = 0;
+    let disposed = false;
+    // Consecutive failures for the current content. A new edit starts the count over.
+    let failures = 0;
+    const failed = (error: unknown) => {
+      // Keep the page dirty so the next edit or the retry below writes it again.
+      dirty.current = true;
+      failures += 1;
+      // No retry after teardown either: the editor already shows another page.
+      const key = disposed || failures >= SAVE_ATTEMPTS ? "saveGaveUp" : "saveFailed";
+      reportPageError(scenarioT(localeRef.current, key), error, pageId, "save");
+    };
+    const saved = () => {
+      if (failures === 0) return;
+      failures = 0;
+      clearPageError(pageId);
+    };
     const save = () => {
       if (!ready.current || !dirty.current || !projectPath) return;
       dirty.current = false;
-      void writePage(projectPath, pageId, editor.getJSON());
+      void writePage(projectPath, pageId, editor.getJSON())
+        .then(saved)
+        .catch((error: unknown) => {
+          failed(error);
+          // After teardown the editor already shows another page; retrying would write that page here.
+          if (disposed || failures >= SAVE_ATTEMPTS) return;
+          window.clearTimeout(timer);
+          timer = window.setTimeout(save, SAVE_RETRY_MS);
+        });
     };
-    let timer = 0;
     const onUpdate = () => {
       if (!ready.current) return;
       dirty.current = true;
+      failures = 0;
       window.clearTimeout(timer);
       timer = window.setTimeout(save, 400);
     };
@@ -213,13 +293,21 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
       if (!pending || !ready.current || !dirty.current || !projectPath) return;
       window.clearTimeout(timer);
       dirty.current = false;
-      pending.push(writePage(projectPath, pageId, editor.getJSON()));
+      pending.push(
+        writePage(projectPath, pageId, editor.getJSON())
+          .then(saved)
+          .catch((error: unknown) => {
+            failed(error);
+            throw error;
+          }),
+      );
     };
     const onHide = () => save();
     editor.on("update", onUpdate);
     window.addEventListener("pagehide", onHide);
     window.addEventListener("ek:flush-pages", onFlush);
     return () => {
+      disposed = true;
       editor.off("update", onUpdate);
       window.removeEventListener("pagehide", onHide);
       window.removeEventListener("ek:flush-pages", onFlush);
@@ -228,18 +316,8 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
     };
   }, [editor, editable, pageId, projectPath]);
 
-  useEffect(() => {
-    if (!editor) return;
-    const update = () => setTick((n) => n + 1);
-    editor.on("transaction", update);
-    return () => {
-      editor.off("transaction", update);
-    };
-  }, [editor]);
-
-  const results = editor?.storage.findAndReplace?.results ?? [];
-  const current = editor?.storage.findAndReplace?.currentIndex;
-  const countLabel = results.length === 0 ? "0" : `${(current ?? 0) + 1}/${results.length}`;
+  const findTotal = toolbar?.findTotal ?? 0;
+  const countLabel = findTotal === 0 ? "0" : `${(toolbar?.findIndex ?? 0) + 1}/${findTotal}`;
 
   function closeFind() {
     setFindOpen(false);
@@ -254,7 +332,7 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
         <select
           data-heading
           aria-label={t("heading1")}
-          value={blockLevel(editor)}
+          value={toolbar?.block ?? "p"}
           onChange={(event) => {
             if (!editor) return;
             const value = event.target.value;
@@ -262,7 +340,7 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
             if (HEADING_LEVELS.some((level) => String(level) === value)) chain.setHeading({ level: Number(value) as (typeof HEADING_LEVELS)[number] }).run();
             else chain.setParagraph().run();
           }}
-          className="h-6 rounded border border-border bg-background px-1 text-xs"
+          className="h-6 rounded border border-border bg-background px-1 text-sm"
         >
           <option value="p">{t("bodyText")}</option>
           <option value="1">{t("heading1")}</option>
@@ -272,28 +350,28 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
           <option value="5">{t("heading5")}</option>
         </select>
         <ToolDivider />
-        <ToolButton title={t("bold")} onClick={() => editor?.chain().focus().toggleBold().run()} active={editor?.isActive("bold")}><span className="font-serif text-[15px] leading-none font-semibold">B</span></ToolButton>
-        <ToolButton title={t("italic")} onClick={() => editor?.chain().focus().toggleItalic().run()} active={editor?.isActive("italic")}><span className="font-serif text-[15px] leading-none italic">I</span></ToolButton>
-        <ToolButton title={t("strike")} onClick={() => editor?.chain().focus().toggleStrike().run()} active={editor?.isActive("strike")}><span className="font-serif text-[15px] leading-none line-through">S</span></ToolButton>
-        <ToolButton title={t("code")} onClick={() => editor?.chain().focus().toggleCode().run()} active={editor?.isActive("code")}><span className="font-mono text-[11px] leading-none">&lt;/&gt;</span></ToolButton>
+        <ToolButton title={t("bold")} onClick={() => editor?.chain().focus().toggleBold().run()} active={toolbar?.bold}><span className="font-serif text-sm leading-none font-semibold">B</span></ToolButton>
+        <ToolButton title={t("italic")} onClick={() => editor?.chain().focus().toggleItalic().run()} active={toolbar?.italic}><span className="font-serif text-sm leading-none italic">I</span></ToolButton>
+        <ToolButton title={t("strike")} onClick={() => editor?.chain().focus().toggleStrike().run()} active={toolbar?.strike}><span className="font-serif text-sm leading-none line-through">S</span></ToolButton>
+        <ToolButton title={t("code")} onClick={() => editor?.chain().focus().toggleCode().run()} active={toolbar?.code}><span className="font-mono text-sm leading-none">&lt;/&gt;</span></ToolButton>
         <ToolDivider />
         <ColorMenu editor={editor} label={t("textColor")} textLabel={t("textColor")} highlightLabel={t("highlight")} defaultLabel={t("fontDefault")} />
         <ToolDivider />
-        <ToolButton title={t("bullet")} onClick={() => editor?.chain().focus().toggleBulletList().run()} active={editor?.isActive("bulletList")}><ListIcon className="size-4" strokeWidth={1.75} /></ToolButton>
-        <ToolButton title={t("ordered")} onClick={() => editor?.chain().focus().toggleOrderedList().run()} active={editor?.isActive("orderedList")}><ListOrdered className="size-4" strokeWidth={1.75} /></ToolButton>
+        <ToolButton title={t("bullet")} onClick={() => editor?.chain().focus().toggleBulletList().run()} active={toolbar?.bullet}><ListIcon className="size-4" strokeWidth={1.75} /></ToolButton>
+        <ToolButton title={t("ordered")} onClick={() => editor?.chain().focus().toggleOrderedList().run()} active={toolbar?.ordered}><ListOrdered className="size-4" strokeWidth={1.75} /></ToolButton>
         <EntityLinkButton editor={editor} locale={locale} pageId={pageId} />
         <ToolDivider />
         <select
           data-font
           aria-label={t("font")}
-          value={fontValue(editor)}
+          value={toolbar?.font ?? ""}
           onChange={(event) => {
             if (!editor) return;
             const value = event.target.value;
             if (value) editor.chain().focus().setFontFamily(value).run();
             else editor.chain().focus().unsetFontFamily().run();
           }}
-          className="h-6 max-w-24 rounded border border-border bg-background px-1 text-xs"
+          className="h-6 max-w-24 rounded border border-border bg-background px-1 text-sm"
         >
           {FONTS.map((font) => (
             <option key={font.key} value={font.value}>{t(font.key)}</option>
@@ -312,9 +390,9 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
               setFindTerm(value);
               editor?.commands.setSearchTerm(value);
             }}
-            className="h-6 w-28 rounded border border-border bg-background px-1.5 text-xs"
+            className="h-6 w-28 rounded border border-border bg-background px-1.5 text-sm"
           />
-          <span className="text-xs text-muted-foreground" data-find-count>{countLabel}</span>
+          <span className="text-sm text-muted-foreground" data-find-count>{countLabel}</span>
           <ToolButton title={t("previous")} onClick={() => editor?.commands.goToPreviousResult()}>↑</ToolButton>
           <ToolButton title={t("next")} onClick={() => editor?.commands.goToNextResult()}>↓</ToolButton>
           <input
@@ -326,7 +404,7 @@ export function BodyEditor({ projectPath, pageId, editable }: { projectPath: str
               setReplaceTerm(value);
               editor?.commands.setReplaceTerm(value);
             }}
-            className="h-6 w-28 rounded border border-border bg-background px-1.5 text-xs"
+            className="h-6 w-28 rounded border border-border bg-background px-1.5 text-sm"
           />
           <ToolButton title={t("replace")} onClick={() => editor?.commands.replace()}>{t("replace")}</ToolButton>
           <ToolButton title={t("replaceAll")} onClick={() => editor?.commands.replaceAll()}>{t("replaceAll")}</ToolButton>
@@ -349,7 +427,7 @@ function EntityLinkButton({ editor, locale, pageId }: { editor: Editor | null; l
   const [articles, setArticles] = useState<ScenarioArticle[]>(readArticles);
   const [catalog, setCatalog] = useState<SceneCatalog>(readSceneCatalog);
   const rootRef = useRef<HTMLDivElement>(null);
-  const active = editor?.isActive("entityLink") ?? false;
+  const active = useEditorState({ editor, selector: ({ editor: current }) => current?.isActive("entityLink") ?? false }) ?? false;
 
   useEffect(() => subscribeActorIndex(setActors), []);
   useEffect(() => subscribeArticles(setArticles), []);
@@ -433,7 +511,7 @@ function EntityLinkButton({ editor, locale, pageId }: { editor: Editor | null; l
         <Link2 className="size-4" strokeWidth={1.75} />
       </ToolButton>
       {open && (
-        <div data-entity-picker className="absolute top-8 left-0 z-20 w-40 rounded-md border border-border bg-popover py-1 text-[13px] text-popover-foreground shadow-md">
+        <div data-entity-picker className="absolute top-8 left-0 z-20 w-40 rounded-md border border-border bg-popover py-1 text-sm text-popover-foreground shadow-md">
           {active && (
             <button
               type="button"
@@ -465,15 +543,20 @@ function EntityLinkButton({ editor, locale, pageId }: { editor: Editor | null; l
         </div>
       )}
       {category && (
-        <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-6" onPointerDown={() => setCategory(null)}>
+        <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-6">
           <div
             role="dialog"
             data-entity-form={category}
             aria-label={t(category)}
-            className="flex max-h-full w-[min(440px,100%)] flex-col gap-3 overflow-hidden rounded-md border border-border bg-background p-4 text-[13px] shadow-lg"
+            className="flex max-h-full w-[min(440px,100%)] flex-col gap-3 overflow-hidden rounded-md border border-border bg-background p-4 text-sm shadow-lg"
             onPointerDown={(event) => event.stopPropagation()}
           >
-            <h2 className="text-sm font-semibold">{t(category)}</h2>
+            <div className="flex items-start justify-between gap-3">
+              <h2 className="min-w-0 text-base font-semibold">{t(category)}</h2>
+              <button type="button" aria-label={t("close")} className="grid size-7 shrink-0 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => setCategory(null)}>
+                <X className="size-4" />
+              </button>
+            </div>
             <LinkPanel title={t("linkedHere")} rows={linkedRows} onPick={apply} />
             <LinkPanel title={t("otherItems")} rows={otherRows} onPick={apply} />
             <div className="flex justify-end">
@@ -489,7 +572,7 @@ function EntityLinkButton({ editor, locale, pageId }: { editor: Editor | null; l
 function LinkPanel({ title, rows, onPick }: { title: string; rows: LinkChoice[]; onPick: (row: LinkChoice) => void }) {
   return (
     <section className="flex min-h-0 flex-col">
-      <h3 className="mb-1 text-xs text-muted-foreground">{title}</h3>
+      <h3 className="mb-1 text-base text-muted-foreground">{title}</h3>
       <div className="max-h-40 overflow-auto">
         {rows.length === 0 ? <p className="text-muted-foreground">—</p> : (
           <div className="flex flex-wrap gap-1.5">
@@ -543,8 +626,15 @@ function relatedSceneIds(nodes: ScenarioTreeNode[], selectedId: string) {
 function ColorMenu({ editor, label, textLabel, highlightLabel, defaultLabel }: { editor: Editor | null; label: string; textLabel: string; highlightLabel: string; defaultLabel: string }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
-  const text = activeColor(editor?.getAttributes("textStyle").color);
-  const highlight = activeColor(editor?.getAttributes("highlight").color);
+  const colors = useEditorState({
+    editor,
+    selector: ({ editor: current }) => ({
+      text: activeColor(current?.getAttributes("textStyle").color),
+      highlight: activeColor(current?.getAttributes("highlight").color),
+    }),
+  });
+  const text = colors?.text ?? null;
+  const highlight = colors?.highlight ?? null;
 
   useEffect(() => {
     if (!open) return;
@@ -580,7 +670,7 @@ function ColorMenu({ editor, label, textLabel, highlightLabel, defaultLabel }: {
         className="inline-flex h-7 items-center gap-0.5 rounded-full pr-0.5 text-muted-foreground hover:bg-accent/60"
       >
         <span
-          className="grid h-6 w-6 place-items-center rounded-full bg-white text-[13px] leading-none font-semibold"
+          className="grid h-6 w-6 place-items-center rounded-full bg-white text-sm leading-none font-semibold"
           style={{ color: text ?? "#171717" }}
         >
           A
@@ -591,7 +681,7 @@ function ColorMenu({ editor, label, textLabel, highlightLabel, defaultLabel }: {
       </button>
       {open && (
         <div data-color-panel className="absolute top-7 left-0 z-20 w-52 rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-md">
-          <div className="mb-2 text-xs font-medium">{textLabel}</div>
+          <div className="mb-2 text-base font-medium">{textLabel}</div>
           <div className="grid grid-cols-5 gap-1.5">
             <button
               type="button"
@@ -601,7 +691,7 @@ function ColorMenu({ editor, label, textLabel, highlightLabel, defaultLabel }: {
               title={defaultLabel}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => applyText(null)}
-              className={`grid h-7 w-7 place-items-center rounded-full border border-foreground/30 text-xs font-semibold text-foreground ${text === null ? "ring-2 ring-foreground ring-offset-1 ring-offset-popover" : ""}`}
+              className={`grid h-7 w-7 place-items-center rounded-full border border-foreground/30 text-sm font-semibold text-foreground ${text === null ? "ring-2 ring-foreground ring-offset-1 ring-offset-popover" : ""}`}
             >
               A
             </button>
@@ -614,14 +704,14 @@ function ColorMenu({ editor, label, textLabel, highlightLabel, defaultLabel }: {
                 aria-pressed={sameColor(text, color)}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => applyText(color)}
-                className={`grid h-7 w-7 place-items-center rounded-full border-2 text-xs font-semibold ${sameColor(text, color) ? "ring-2 ring-foreground ring-offset-1 ring-offset-popover" : ""}`}
+                className={`grid h-7 w-7 place-items-center rounded-full border-2 text-sm font-semibold ${sameColor(text, color) ? "ring-2 ring-foreground ring-offset-1 ring-offset-popover" : ""}`}
                 style={{ borderColor: color, color }}
               >
                 A
               </button>
             ))}
           </div>
-          <div className="mt-3 mb-2 text-xs font-medium">{highlightLabel}</div>
+          <div className="mt-3 mb-2 text-base font-medium">{highlightLabel}</div>
           <div className="grid grid-cols-5 gap-1.5">
             <button
               type="button"
@@ -669,7 +759,7 @@ function ToolButton({ title, active, onClick, children }: { title: string; activ
       title={title}
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
-      className={`inline-flex h-7 min-w-7 items-center justify-center rounded-md px-1.5 text-xs ${active ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground"}`}
+      className={`inline-flex h-7 min-w-7 items-center justify-center rounded-md px-1.5 text-sm ${active ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground"}`}
     >
       {children}
     </button>

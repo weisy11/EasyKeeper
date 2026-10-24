@@ -12,18 +12,31 @@ pub struct ProjectSnapshot {
 }
 
 #[tauri::command]
-pub fn create_project_snapshot(project_path: String) -> Result<ProjectSnapshot, String> {
-    create(&project_path)
+pub async fn create_project_snapshot(project_path: String) -> Result<ProjectSnapshot, String> {
+    crate::blocking::run(move || {
+        // Pages are copied file by file; hold the file lock so an editor save cannot land mid-copy.
+        let _files = crate::blocking::files();
+        create(&project_path)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn list_project_snapshots(project_path: String) -> Result<Vec<ProjectSnapshot>, String> {
-    list(&project_path)
+pub async fn list_project_snapshots(project_path: String) -> Result<Vec<ProjectSnapshot>, String> {
+    crate::blocking::run(move || {
+        let _files = crate::blocking::files();
+        list(&project_path)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn delete_project_snapshot(project_path: String, id: String) -> Result<(), String> {
-    delete(&project_path, &id)
+pub async fn delete_project_snapshot(project_path: String, id: String) -> Result<(), String> {
+    crate::blocking::run(move || {
+        let _files = crate::blocking::files();
+        delete(&project_path, &id)
+    })
+    .await
 }
 
 pub fn create(project_path: &str) -> Result<ProjectSnapshot, String> {

@@ -1,3 +1,4 @@
+import { serial } from "@ek/tool-api";
 import { invoke } from "@tauri-apps/api/core";
 
 /**
@@ -22,11 +23,11 @@ function databaseReady() {
 }
 
 async function exec(projectPath: string, sql: string, params: SqlValue[] = []) {
-  await invoke("project_db_exec", { projectPath, toolPrefix: TOOL_PREFIX, sql, params });
+  await serial(projectPath, () => invoke("project_db_exec", { projectPath, toolPrefix: TOOL_PREFIX, sql, params }));
 }
 
 async function query<T>(projectPath: string, sql: string, params: SqlValue[] = []): Promise<T[]> {
-  return invoke<T[]>("project_db_query", { projectPath, toolPrefix: TOOL_PREFIX, sql, params });
+  return serial(projectPath, () => invoke<T[]>("project_db_query", { projectPath, toolPrefix: TOOL_PREFIX, sql, params }));
 }
 
 const SCHEMA = [
@@ -70,8 +71,22 @@ export async function resetArticle(recordPath: string, articleId: string) {
   await exec(recordPath, "DELETE FROM ek_scenario_record_article WHERE article_id = ?1", [articleId]);
 }
 
-export async function ensureRecordSchema(recordPath: string) {
-  if (!databaseReady() || !recordPath) return;
+const schemaReady = new Map<string, Promise<void>>();
+
+/** Runs the schema once per record path. A failed attempt is forgotten so the next call retries. */
+export function ensureRecordSchema(recordPath: string): Promise<void> {
+  if (!databaseReady() || !recordPath) return Promise.resolve();
+  const pending = schemaReady.get(recordPath);
+  if (pending) return pending;
+  const next = applyRecordSchema(recordPath).catch((error: unknown) => {
+    schemaReady.delete(recordPath);
+    throw error;
+  });
+  schemaReady.set(recordPath, next);
+  return next;
+}
+
+async function applyRecordSchema(recordPath: string) {
   for (const sql of SCHEMA) await exec(recordPath, sql);
 }
 

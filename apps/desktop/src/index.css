@@ -138,3 +138,8 @@
   min-height: 0;
   overflow: hidden;
 }
+
+/* The dice panel passes through the grid for one frame before its window opens. */
+.dv-tab:has([data-tab-hidden]) {
+  display: none;
+}

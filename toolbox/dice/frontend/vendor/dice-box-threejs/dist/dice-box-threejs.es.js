@@ -16755,7 +16755,7 @@ const Sp = {
 };
 class Cp {
   constructor(e, t = {}) {
-    this.initialized = !1, this.container = document.querySelector(e), this.dimensions = new Ce(this.container.clientWidth, this.container.clientHeight), this.adaptive_timestep = !1, this.last_time = 0, this.running = !1, this.rolling = !1, this.threadid, this.display = {
+    this.initialized = !1, this.container = typeof e == "string" ? document.querySelector(e) : e, this.dimensions = new Ce(this.container.clientWidth, this.container.clientHeight), this.adaptive_timestep = !1, this.last_time = 0, this.running = !1, this.rolling = !1, this.threadid, this.display = {
       currentWidth: null,
       currentHeight: null,
       containerWidth: null,

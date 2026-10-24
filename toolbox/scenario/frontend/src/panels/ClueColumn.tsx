@@ -16,6 +16,7 @@ import { onOpenEntity } from "../entityLink";
 import { scenarioT, type ScenarioLocale, type ScenarioStringKey } from "../i18n";
 import { discoverArticle, loadFoundArticles, resetArticle } from "../play/recordDb";
 import { presentSceneIds, readSceneCatalog, sceneLinkRows, subscribeSceneCatalog, type SceneCatalog } from "../sceneLinks";
+import { clearWriteError, reportWriteError } from "../writeStatus";
 
 type Kind = ScenarioArticle["kind"];
 
@@ -112,31 +113,42 @@ export function ClueColumn({
     setDraft({ kind, article: null });
   }
 
-  async function save(article: ScenarioArticle) {
-    if (!editable || projectPath === "") return;
-    if (usingDb) {
-      await ensureScenarioSchema(projectPath);
-      if (draft?.article) await updateScenarioArticle(projectPath, article);
-      else await insertScenarioArticle(projectPath, article);
-      publishArticles(await loadScenarioArticles(projectPath));
-    } else if (draft?.article) {
-      publishArticles(articles.map((item) => (item.id === article.id ? article : item)));
-    } else {
-      publishArticles([...articles, article]);
+  /** See `writeActor` in NpcColumn: write first, report failures, touch the list only on success. */
+  async function writeArticle(id: string, name: string | undefined, work: () => Promise<void>): Promise<boolean> {
+    const key = `article.${id}`;
+    try {
+      await work();
+      clearWriteError(key);
+      return true;
+    } catch (error) {
+      reportWriteError(key, `${t("articleWriteFailed")} · ${name || articles.find((item) => item.id === id)?.name || id}`, error);
+      return false;
     }
-    setDraft(null);
+  }
+
+  async function save(article: ScenarioArticle, close: boolean) {
+    if (!editable || projectPath === "") return;
+    const existing = !!draft?.article;
+    if (usingDb) {
+      // The form submits the complete record (links and position included), so nothing is read back.
+      const done = await writeArticle(article.id, article.name, async () => {
+        await ensureScenarioSchema(projectPath);
+        if (existing) await updateScenarioArticle(projectPath, article);
+        else await insertScenarioArticle(projectPath, article);
+      });
+      if (!done) return;
+    }
+    const current = readArticles();
+    publishArticles(existing ? current.map((item) => (item.id === article.id ? article : item)) : [...current, article]);
+    setDraft(close ? null : { kind: article.kind, article });
   }
 
   async function moveArticle(id: string, trashed: boolean) {
     setRowMenu(null);
     if (!editable || projectPath === "") return;
     if (trashed) setTrashOpen(true);
-    if (usingDb) {
-      await setScenarioArticleTrashed(projectPath, id, trashed);
-      publishArticles(await loadScenarioArticles(projectPath));
-    } else {
-      publishArticles(articles.map((item) => (item.id === id ? { ...item, trashed } : item)));
-    }
+    if (usingDb && !(await writeArticle(id, undefined, () => setScenarioArticleTrashed(projectPath, id, trashed)))) return;
+    publishArticles(readArticles().map((item) => (item.id === id ? { ...item, trashed } : item)));
   }
 
   async function discover(id: string) {
@@ -154,13 +166,9 @@ export function ClueColumn({
   async function purgeArticle(id: string) {
     setRowMenu(null);
     if (!editable || projectPath === "") return;
+    if (usingDb && !(await writeArticle(id, undefined, () => deleteScenarioArticle(projectPath, id)))) return;
     if (draft?.article?.id === id) setDraft(null);
-    if (usingDb) {
-      await deleteScenarioArticle(projectPath, id);
-      publishArticles(await loadScenarioArticles(projectPath));
-    } else {
-      publishArticles(articles.filter((item) => item.id !== id));
-    }
+    publishArticles(readArticles().filter((item) => item.id !== id));
   }
 
   function renderArticle(article: ScenarioArticle) {
@@ -204,7 +212,7 @@ export function ClueColumn({
         }}
       >
         <span className="min-w-0 flex-1 truncate">{article.name}</span>
-        <span className="shrink-0 text-[11px] text-muted-foreground">{article.kind === "clue" ? t("clue") : t("item")}</span>
+        <span className="shrink-0 text-xs text-muted-foreground">{article.kind === "clue" ? t("clue") : t("item")}</span>
         {!editable && (
           <FindMark
             found={foundIds.includes(article.id)}
@@ -218,7 +226,7 @@ export function ClueColumn({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border bg-card px-2.5 text-xs font-semibold">
+      <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border bg-card px-2.5 text-base font-semibold">
         <span className="min-w-0 flex-1 truncate">{t("clues")}</span>
         <button
           type="button"
@@ -267,7 +275,7 @@ export function ClueColumn({
       {menu && (
         <div
           data-clue-menu=""
-          className="fixed z-30 min-w-36 rounded-md border border-border bg-popover py-1 text-[13px] text-popover-foreground shadow-md"
+          className="fixed z-30 min-w-36 rounded-md border border-border bg-popover py-1 text-sm text-popover-foreground shadow-md"
           style={{ left: menu.x, top: menu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
@@ -282,7 +290,7 @@ export function ClueColumn({
       {rowMenu && (
         <div
           data-article-menu=""
-          className="fixed z-30 min-w-36 rounded-md border border-border bg-popover py-1 text-[13px] text-popover-foreground shadow-md"
+          className="fixed z-30 min-w-36 rounded-md border border-border bg-popover py-1 text-sm text-popover-foreground shadow-md"
           style={{ left: rowMenu.x, top: rowMenu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
@@ -316,7 +324,7 @@ export function ClueColumn({
           titleId={titleId}
           onCancel={() => setDraft(null)}
           editable={editable}
-          onSave={(article) => void save(article)}
+          onSave={(article, close) => void save(article, close)}
         />
       )}
     </div>
@@ -377,9 +385,9 @@ function ReadOnlyArticleSheet({
       >
         <div className="flex shrink-0 items-center justify-end gap-2 border-b border-border px-3 py-2">
           {found ? (
-            <button type="button" className="rounded-md bg-primary px-3 py-1 text-sm text-primary-foreground" onClick={onReset}>{t("reset")}</button>
+            <button type="button" className="rounded-md bg-primary px-3 py-1 text-base text-primary-foreground" onClick={onReset}>{t("reset")}</button>
           ) : (
-            <button type="button" className="rounded-md bg-primary px-3 py-1 text-sm text-primary-foreground" onClick={onDiscover}>{t("discover")}</button>
+            <button type="button" className="rounded-md bg-primary px-3 py-1 text-base text-primary-foreground" onClick={onDiscover}>{t("discover")}</button>
           )}
           <button
             type="button"
@@ -407,8 +415,8 @@ function ReadOnlyArticleSheet({
 function Fact({ label, value }: { label: string; value: string }) {
   return (
     <span className="inline-flex min-w-0 items-baseline gap-1">
-      <span className="text-[14px] text-muted-foreground">{label}</span>
-      <span className="text-[16px]">{value.trim() ? value : "—"}</span>
+      <span className="text-base text-muted-foreground">{label}</span>
+      <span className="text-base">{value.trim() ? value : "—"}</span>
     </span>
   );
 }
@@ -416,8 +424,8 @@ function Fact({ label, value }: { label: string; value: string }) {
 function Prose({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-[14px] text-muted-foreground">{label}</div>
-      <p className="mt-0.5 whitespace-pre-wrap text-[14px]">{value.trim() ? value : "—"}</p>
+      <div className="text-base text-muted-foreground">{label}</div>
+      <p className="mt-0.5 whitespace-pre-wrap text-base">{value.trim() ? value : "—"}</p>
     </div>
   );
 }
@@ -439,7 +447,7 @@ function ArticleDialog({
   titleId: string;
   editable: boolean;
   onCancel: () => void;
-  onSave: (article: ScenarioArticle) => void;
+  onSave: (article: ScenarioArticle, close: boolean) => void;
 }) {
   const t = (key: ScenarioStringKey) => scenarioT(locale, key);
   const [name, setName] = useState(article?.name ?? "");
@@ -458,7 +466,7 @@ function ArticleDialog({
     setScenes((current) => current.filter((id) => present.has(id)));
   }, [catalog]);
 
-  function submit() {
+  function submit(close: boolean) {
     const fallback = kind === "clue" ? t("untitledClue") : t("untitledItem");
     onSave({
       id: article?.id ?? crypto.randomUUID(),
@@ -469,25 +477,30 @@ function ArticleDialog({
       scenes,
       actors: actors.filter((id) => people.some((person) => person.id === id)),
       trashed: article?.trashed ?? false,
-    });
+    }, close);
   }
 
   return (
-    <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-6" onPointerDown={onCancel}>
+    <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-6">
       <form
         role="dialog"
         aria-labelledby={titleId}
         data-article-form={kind}
-        className="max-h-full w-[min(640px,100%)] overflow-auto rounded-md border border-border bg-background p-4 text-[13px] shadow-lg"
+        className="max-h-full w-[min(640px,100%)] overflow-auto rounded-md border border-border bg-background p-4 text-sm shadow-lg"
         onPointerDown={(event) => event.stopPropagation()}
         onSubmit={(event) => {
           event.preventDefault();
           if (!editable) return;
-          submit();
+          submit(true);
         }}
       >
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <h2 id={titleId} className="min-w-0 text-base font-semibold">{article ? name.trim() || (kind === "clue" ? t("untitledClue") : t("untitledItem")) : kind === "clue" ? t("newClue") : t("newItem")}</h2>
+          <button type="button" aria-label={t("close")} className="grid size-7 shrink-0 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" onClick={onCancel}>
+            <X className="size-4" />
+          </button>
+        </div>
         <fieldset disabled={!editable} className="min-w-0 border-0 p-0">
-        <h2 id={titleId} className="mb-3 text-sm font-semibold">{article ? name.trim() || (kind === "clue" ? t("untitledClue") : t("untitledItem")) : kind === "clue" ? t("newClue") : t("newItem")}</h2>
         <label className="flex items-center gap-2">
           <span className="w-[4.5em] shrink-0 text-base">{t("actorName")}</span>
           <input value={name} onChange={(event) => setName(event.target.value)} className="h-9 min-w-0 flex-1 rounded-md border border-border bg-card px-2 outline-none" />
@@ -497,7 +510,7 @@ function ArticleDialog({
           <textarea value={description} rows={2} onChange={(event) => setDescription(event.target.value)} className="w-full resize-y rounded-md border border-border bg-card px-2 py-1 outline-none" />
         </label>
         <div className="mt-3 border-t border-border pt-3">
-          <h3 className="mb-2 text-xs text-muted-foreground">{t("sceneLinks")}</h3>
+          <h3 className="mb-2 text-base text-muted-foreground">{t("sceneLinks")}</h3>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             {sceneLinkRows(catalog.nodes, catalog.trash, new Set(scenes)).map((row) => (
               <div key={row.id} data-scene-link={row.id} data-trashed={row.trashed ? "true" : "false"} className="flex max-w-full shrink-0 items-center gap-1">
@@ -515,7 +528,7 @@ function ArticleDialog({
           </div>
         </div>
         <div className="mt-3 border-t border-border pt-3">
-          <h3 className="mb-2 text-xs text-muted-foreground">{t("actorLinks")}</h3>
+          <h3 className="mb-2 text-base text-muted-foreground">{t("actorLinks")}</h3>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             {people.filter((person) => !person.trashed || actors.includes(person.id)).map((person) => (
               <div key={person.id} data-actor-link={person.id} data-trashed={person.trashed ? "true" : "false"} className="flex max-w-full shrink-0 items-center gap-1">
@@ -527,7 +540,7 @@ function ArticleDialog({
                     onChange={(event) => setActors((current) => (event.target.checked ? [...current, person.id] : current.filter((id) => id !== person.id)))}
                   />
                   <span>{person.name}</span>
-                  <span className="text-[11px] text-muted-foreground">{person.kind === "npc" ? "NPC" : t("monster")}</span>
+                  <span className="text-xs text-muted-foreground">{person.kind === "npc" ? "NPC" : t("monster")}</span>
                 </label>
               </div>
             ))}
@@ -535,6 +548,7 @@ function ArticleDialog({
         </div>
         </fieldset>
         <div className="mt-3 flex justify-end gap-2">
+          {editable && <button type="button" className="rounded-md px-3 py-1 hover:bg-muted" onClick={() => submit(false)}>{t("apply")}</button>}
           <button type="button" className="rounded-md px-3 py-1 hover:bg-muted" onClick={onCancel}>{editable ? t("cancel") : t("close")}</button>
           {editable && <button type="submit" className="rounded-md bg-primary px-3 py-1 text-primary-foreground">{article ? t("save") : t("create")}</button>}
         </div>

@@ -11,7 +11,9 @@ export const scenarioTool = defineTool({
   title: { zh: "模组", en: "Scenario" },
   icon: BookOpenIcon as ComponentType<{ className?: string }>,
   region: "center",
-  minWidth: 720,
+  // Left column of the fixed two-column workspace. Together with the 240px side column
+  // this sets the 720px floor the main window must not go below.
+  minWidth: 480,
   minHeight: 420,
   dependencies: [],
   moduleData: scenarioModuleData,

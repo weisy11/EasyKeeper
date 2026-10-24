@@ -50,49 +50,133 @@ pub fn monitor_name<R: Runtime>(w: &WebviewWindow<R>) -> Option<String> {
   w.current_monitor().ok().flatten().and_then(|m| m.name().cloned())
 }
 
-/// Keeps `rect` if its title bar is reachable on a connected monitor; otherwise moves it to the
-/// primary monitor, shrunk to fit and centered. Returns the rect and whether it was changed.
-pub fn fit_on_screen<R: Runtime>(app: &AppHandle<R>, rect: Rect) -> (Rect, bool) {
-  let monitors = app.available_monitors().unwrap_or_default();
+/// Work areas of the connected displays, in global logical coordinates.
+pub fn work_areas<R: Runtime>(app: &AppHandle<R>) -> Vec<Rect> {
+  app.available_monitors().unwrap_or_default().iter().map(work_area).collect()
+}
+
+/// Keeps `rect` if its title bar is reachable on one of `areas`; otherwise moves it to
+/// `primary`, shrunk to fit and centered. Returns the rect and whether it was changed.
+///
+/// An empty `areas` means the displays could not be enumerated — on macOS that happens
+/// while the display is asleep — not that they are gone. The rectangle is then trusted
+/// as-is, so a window parked on a secondary display is not dragged back to the primary.
+pub fn fit_rect(areas: &[Rect], primary: Option<Rect>, rect: Rect) -> (Rect, bool) {
+  if areas.is_empty() {
+    return (rect, false);
+  }
   let strip = Rect { height: TITLE_STRIP, ..rect };
-  let reachable = monitors.iter().any(|m| {
-    let (w, h) = overlap(&strip, &work_area(m));
+  let reachable = areas.iter().any(|area| {
+    let (w, h) = overlap(&strip, area);
     w >= MIN_VISIBLE_W.min(rect.width) && h >= MIN_VISIBLE_H
   });
   if reachable {
     return (rect, false);
   }
-  let Some(primary) = app.primary_monitor().ok().flatten().or_else(|| monitors.into_iter().next()) else {
+  let Some(primary) = primary else {
     return (rect, false);
   };
-  let wa = work_area(&primary);
-  let width = rect.width.min(wa.width - 40.0).max(240.0);
-  let height = rect.height.min(wa.height - 60.0).max(160.0);
-  let fitted = Rect { x: wa.x + (wa.width - width) / 2.0, y: wa.y + (wa.height - height) / 2.0, width, height };
+  let width = rect.width.min(primary.width - 40.0).max(240.0);
+  let height = rect.height.min(primary.height - 60.0).max(160.0);
+  let fitted = Rect { x: primary.x + (primary.width - width) / 2.0, y: primary.y + (primary.height - height) / 2.0, width, height };
   (fitted, true)
 }
 
-fn state_path<R: Runtime>(app: &AppHandle<R>) -> Option<std::path::PathBuf> {
-  Some(app.path().app_config_dir().ok()?.join("main-window.json"))
+/// Keeps `rect` if its title bar is reachable on a connected monitor; otherwise moves it to the
+/// primary monitor, shrunk to fit and centered. Returns the rect and whether it was changed.
+pub fn fit_on_screen<R: Runtime>(app: &AppHandle<R>, rect: Rect) -> (Rect, bool) {
+  let areas = work_areas(app);
+  let primary = app.primary_monitor().ok().flatten().map(|m| work_area(&m)).or_else(|| areas.first().copied());
+  fit_rect(&areas, primary, rect)
 }
 
-pub fn load_main<R: Runtime>(app: &AppHandle<R>) -> Option<MainWindowState> {
-  let raw = std::fs::read_to_string(state_path(app)?).ok()?;
+/// Main window frame lives in the app database. Older builds kept it in `main-window.json`;
+/// that file is imported once and deleted.
+const MAIN_KV_KEY: &str = "ek.window.main";
+const LEGACY_FILE: &str = "main-window.json";
+
+fn legacy_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+  Some(app.path().app_config_dir().ok()?.join(LEGACY_FILE))
+}
+
+fn import_legacy(app: &AppHandle) {
+  let Some(path) = legacy_path(app) else { return };
+  let Ok(raw) = std::fs::read_to_string(&path) else { return };
+  let valid = serde_json::from_str::<MainWindowState>(&raw).is_ok();
+  let result = crate::app_db::with(app, |conn| {
+    if valid && crate::app_db::kv_get(conn, MAIN_KV_KEY)?.is_none() {
+      crate::app_db::kv_set(conn, MAIN_KV_KEY, &raw)?;
+    }
+    Ok(())
+  });
+  match result {
+    Ok(()) => {
+      let _ = std::fs::remove_file(&path);
+      println!("[RUST] imported {LEGACY_FILE} into the app database");
+    }
+    Err(err) => eprintln!("[RUST] cannot import {LEGACY_FILE}: {err}"),
+  }
+}
+
+pub fn load_main(app: &AppHandle) -> Option<MainWindowState> {
+  import_legacy(app);
+  let raw = crate::app_db::with(app, |conn| crate::app_db::kv_get(conn, MAIN_KV_KEY)).ok().flatten()?;
   serde_json::from_str(&raw).ok()
 }
 
-pub fn save_main<R: Runtime>(app: &AppHandle<R>, state: &MainWindowState) {
-  let Some(path) = state_path(app) else { return };
-  if let Some(dir) = path.parent() {
-    let _ = std::fs::create_dir_all(dir);
-  }
-  if let Ok(json) = serde_json::to_string_pretty(state) {
-    let _ = std::fs::write(path, json);
+pub fn save_main(app: &AppHandle, state: &MainWindowState) {
+  let Ok(json) = serde_json::to_string(state) else { return };
+  if let Err(err) = crate::app_db::with(app, |conn| crate::app_db::kv_set(conn, MAIN_KV_KEY, &json)) {
+    eprintln!("[RUST] cannot save main window frame: {err}");
   }
 }
 
-pub fn clear_main<R: Runtime>(app: &AppHandle<R>) {
-  if let Some(path) = state_path(app) {
+pub fn clear_main(app: &AppHandle) {
+  let _ = crate::app_db::with(app, |conn| crate::app_db::kv_delete(conn, MAIN_KV_KEY));
+  if let Some(path) = legacy_path(app) {
     let _ = std::fs::remove_file(path);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  const PRIMARY: Rect = Rect { x: 0.0, y: 0.0, width: 1496.0, height: 996.0 };
+  const SECONDARY: Rect = Rect { x: -2560.0, y: -600.0, width: 2560.0, height: 1440.0 };
+
+  #[test]
+  fn keeps_a_rect_that_reaches_a_display() {
+    let rect = Rect { x: 20.0, y: 59.0, width: 1456.0, height: 878.0 };
+    let (out, moved) = fit_rect(&[PRIMARY], Some(PRIMARY), rect);
+    assert!(!moved);
+    assert_eq!(out, rect);
+  }
+
+  #[test]
+  fn keeps_a_rect_on_a_secondary_display() {
+    let rect = Rect { x: -1861.0, y: -375.0, width: 567.0, height: 752.0 };
+    let (out, moved) = fit_rect(&[PRIMARY, SECONDARY], Some(PRIMARY), rect);
+    assert!(!moved);
+    assert_eq!(out, rect);
+  }
+
+  #[test]
+  fn moves_an_unreachable_rect_to_the_primary_display() {
+    let rect = Rect { x: 5000.0, y: 5000.0, width: 400.0, height: 300.0 };
+    let (out, moved) = fit_rect(&[PRIMARY], Some(PRIMARY), rect);
+    assert!(moved);
+    assert_eq!(out.x, PRIMARY.x + (PRIMARY.width - 400.0) / 2.0);
+    assert_eq!(out.y, PRIMARY.y + (PRIMARY.height - 300.0) / 2.0);
+  }
+
+  #[test]
+  fn trusts_the_rect_when_no_display_can_be_enumerated() {
+    // macOS reports an empty display list while the display is asleep. That is not the
+    // same as "every display is gone", so a saved position must survive it.
+    let rect = Rect { x: -1861.0, y: -375.0, width: 567.0, height: 752.0 };
+    let (out, moved) = fit_rect(&[], Some(PRIMARY), rect);
+    assert!(!moved);
+    assert_eq!(out, rect);
   }
 }

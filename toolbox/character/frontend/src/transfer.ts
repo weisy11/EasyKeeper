@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { readProjectImageBase64, writeProjectImageBase64 } from "../../../scenario/frontend/src/storage";
+import { readProjectImageBase64, writeProjectImageBase64 } from "@ek/tool-api";
 import { emptyInvestigator, type Fellow, type Investigator, type Skill, type Weapon } from "./db";
 import { md5 } from "./md5";
 
