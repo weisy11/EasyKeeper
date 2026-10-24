@@ -6,6 +6,7 @@ import { useCopilotLocale } from "../locale";
 import {
   appendMessage,
   completeChat,
+  deleteChat,
   failureParts,
   listChats,
   loadModuleChat,
@@ -231,6 +232,8 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
   const [moduleName, setModuleName] = useState("");
   const [chatList, setChatList] = useState<ChatSummary[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  /** Right-clicked history entry and where its menu should open. */
+  const [chatMenu, setChatMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const historyRef = useRef<HTMLDivElement>(null);
   const touchedRef = useRef(false);
   const [replying, setReplying] = useState(false);
@@ -490,6 +493,20 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
   }, [historyOpen]);
+
+  useEffect(() => {
+    if (!chatMenu) return;
+    const close = () => setChatMenu(null);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [chatMenu]);
 
   useEffect(() => {
     if (skipAutoScroll.current) {
@@ -755,6 +772,23 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
       .catch((error: unknown) => console.error("[ek.copilot] opening a chat failed", error));
   }
 
+  /** Remove one chat from the history and, when it is the open one, start a fresh thread. */
+  async function deleteHistoryChat(id: string) {
+    if (replying) return;
+    try {
+      await deleteChat(id);
+    } catch (error) {
+      console.error("[ek.copilot] deleting a chat failed", error);
+      return;
+    }
+    const list = await listChats().catch(() => [] as ChatSummary[]);
+    setChatList(list);
+    if (id !== chatId) return;
+    resetThread();
+    setChatOrigin(originFrom(moduleDir, moduleName));
+    setChatId(crypto.randomUUID());
+  }
+
   function stop() {
     const requestId = requestRef.current;
     if (requestId) void stopChat(requestId);
@@ -785,12 +819,44 @@ export function CopilotPanel({ projectPath, modulePath, mode, loadModuleData }: 
               <div className="max-h-[40rem] overflow-y-auto">
                 {chatList.length === 0 ? <p className="px-3 py-2 text-muted-foreground">{t("emptyHistory")}</p> : null}
                 {chatList.map((chat) => (
-                  <button key={chat.id} type="button" className={`flex h-8 w-full items-center gap-3 px-3 text-left hover:bg-muted ${chat.id === chatId ? "bg-muted" : ""}`} onClick={() => openHistoryChat(chat.id)}>
+                  <button
+                    key={chat.id}
+                    type="button"
+                    className={`flex h-8 w-full items-center gap-3 px-3 text-left hover:bg-muted ${chat.id === chatId ? "bg-muted" : ""}`}
+                    onClick={() => {
+                      setChatMenu(null);
+                      openHistoryChat(chat.id);
+                    }}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      if (replying) return;
+                      setChatMenu({ id: chat.id, x: event.clientX, y: event.clientY });
+                    }}
+                  >
                     <span className="min-w-0 flex-1 truncate">{chat.title || t("newChat")}</span>
                     <span className="shrink-0 text-sm text-muted-foreground">{chatStamp(chat.updatedAt)}</span>
                   </button>
                 ))}
               </div>
+            </div>
+          ) : null}
+          {chatMenu ? (
+            <div
+              className="fixed z-50 min-w-32 rounded-md border border-border bg-popover py-1 text-popover-foreground shadow-md"
+              style={{ left: Math.min(chatMenu.x, window.innerWidth - 150), top: Math.min(chatMenu.y, window.innerHeight - 48) }}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <button
+                type="button"
+                className="block h-8 w-full px-3 text-left hover:bg-muted"
+                onClick={() => {
+                  const id = chatMenu.id;
+                  setChatMenu(null);
+                  void deleteHistoryChat(id);
+                }}
+              >
+                {t("deleteChat")}
+              </button>
             </div>
           ) : null}
         </div>

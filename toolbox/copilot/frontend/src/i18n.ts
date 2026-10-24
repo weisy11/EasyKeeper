@@ -30,6 +30,7 @@ const strings = {
   emptyChat: { zh: "从下面输入。", en: "Type below." },
   newChat: { zh: "新对话", en: "New chat" },
   history: { zh: "历史对话", en: "History" },
+  deleteChat: { zh: "删除对话", en: "Delete chat" },
   loadingOlder: { zh: "加载更早的消息…", en: "Loading earlier messages…" },
   compressed: { zh: "此前对话已压缩", en: "Earlier conversation compressed" },
   showSummary: { zh: "查看摘要", en: "Show summary" },

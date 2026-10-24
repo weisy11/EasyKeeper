@@ -121,6 +121,11 @@ export function openChatRecord(id: string) {
   return invoke<ChatOpen | null>("copilot_chat_open", { id });
 }
 
+/** Delete a chat with its messages and summaries. False when there was nothing to delete. */
+export function deleteChat(id: string) {
+  return invoke<boolean>("copilot_chat_delete", { id });
+}
+
 /** Up to one page of messages older than `before`, in chat order. */
 export function olderMessages(id: string, before: number) {
   return invoke<StoredMessage[]>("copilot_chat_messages", { id, before });

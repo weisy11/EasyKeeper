@@ -177,6 +177,16 @@ pub fn open(conn: &Connection, chat_id: &str) -> Result<Option<ChatOpen>, String
     Ok(Some(ChatOpen { meta, updated_at, total, messages, summary }))
 }
 
+/// Remove a chat with everything stored under it. Returns true when a chat row was deleted.
+pub fn delete(conn: &Connection, chat_id: &str) -> Result<bool, String> {
+    let tx = conn.unchecked_transaction().map_err(|err| err.to_string())?;
+    tx.execute("DELETE FROM copilot_summary WHERE chat_id = ?1", params![chat_id]).map_err(|err| err.to_string())?;
+    tx.execute("DELETE FROM copilot_message WHERE chat_id = ?1", params![chat_id]).map_err(|err| err.to_string())?;
+    let removed = tx.execute("DELETE FROM copilot_chat WHERE id = ?1", params![chat_id]).map_err(|err| err.to_string())?;
+    tx.commit().map_err(|err| err.to_string())?;
+    Ok(removed > 0)
+}
+
 /// Upsert the chat row and append one message. Returns the message position.
 pub fn append(conn: &Connection, meta: &ChatMeta, message: &ChatMessage) -> Result<i64, String> {
     let now = crate::app_db::now_millis();
@@ -259,6 +269,16 @@ pub async fn copilot_chat_messages(app: AppHandle, id: String, before: i64) -> R
     crate::blocking::run(move || {
         let id = check_id(&id)?;
         crate::app_db::with(&app, |conn| messages_before(conn, id, before, PAGE_SIZE))
+    })
+    .await
+}
+
+/// Delete one chat and its messages and summaries. True when something was removed.
+#[tauri::command]
+pub async fn copilot_chat_delete(app: AppHandle, id: String) -> Result<bool, String> {
+    crate::blocking::run(move || {
+        let id = check_id(&id)?;
+        crate::app_db::with(&app, |conn| delete(conn, id))
     })
     .await
 }
@@ -397,6 +417,25 @@ mod tests {
         let after = messages_after(&conn, "d", summary.covers_to).unwrap();
         assert_eq!(after.iter().map(|m| m.pos).collect::<Vec<_>>(), vec![4, 5]);
         assert_eq!(messages_after(&conn, "d", -1).unwrap().len(), 6);
+    }
+
+    #[test]
+    fn delete_removes_the_chat_with_its_messages_and_summaries() {
+        let conn = memory_db();
+        append(&conn, &meta("a"), &message("user", "hi")).unwrap();
+        append(&conn, &meta("a"), &message("assistant", "hello")).unwrap();
+        append(&conn, &meta("b"), &message("user", "keep")).unwrap();
+        insert_summary(&conn, "a", 1, "summary of a").unwrap();
+
+        assert!(delete(&conn, "a").unwrap());
+        assert!(open(&conn, "a").unwrap().is_none());
+        assert!(messages_after(&conn, "a", -1).unwrap().is_empty());
+        assert!(latest_summary(&conn, "a").unwrap().is_none());
+        assert_eq!(list(&conn).unwrap().len(), 1);
+
+        // A chat that was never stored is not an error, it simply has nothing to remove.
+        assert!(!delete(&conn, "missing").unwrap());
+        assert!(open(&conn, "b").unwrap().is_some());
     }
 
     #[test]

@@ -10,7 +10,7 @@ mod snapshot;
 
 use app_db::{app_kv_all, app_kv_delete, app_kv_get, app_kv_set};
 use copilot::{copilot_complete, copilot_delete_provider, copilot_list_models, copilot_providers, copilot_proxies, copilot_save_provider, copilot_save_proxy, copilot_stop};
-use copilot_chats::{copilot_chat_list, copilot_chat_messages, copilot_chat_open, copilot_message_append, copilot_module_chat_get, copilot_module_chat_set};
+use copilot_chats::{copilot_chat_delete, copilot_chat_list, copilot_chat_messages, copilot_chat_open, copilot_message_append, copilot_module_chat_get, copilot_module_chat_set};
 use geometry::{MainWindowState, Rect};
 use session::{session_get, session_set, LaunchMemory};
 use snapshot::{create_project_snapshot, delete_project_snapshot, list_project_snapshots};
@@ -673,6 +673,7 @@ pub fn run() {
       copilot_chat_list,
       copilot_chat_open,
       copilot_chat_messages,
+      copilot_chat_delete,
       copilot_message_append,
       copilot_module_chat_get,
       copilot_module_chat_set,
