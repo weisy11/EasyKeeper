@@ -2,3 +2,9 @@ packages:
   - "apps/*"
   - "packages/*"
   - "toolbox/*/frontend"
+
+overrides:
+  # 8.4.0 is the first dockview release that lets pop-out windows open from a packaged
+  # webview (its own `tauri://` scheme). The transitive range `^8.4.0` would otherwise
+  # resolve to the newest 8.x, which carries unrelated core behaviour changes.
+  dockview-core: "8.4.0"

@@ -1,10 +1,17 @@
+import { createRequire } from "node:module";
 import path from "node:path";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 
+const require = createRequire(import.meta.url);
+
+/** The dockview release the layout snapshot was written by. Read from the installed package. */
+const dockviewVersion: string = require("dockview-react/package.json").version;
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  define: { __DOCKVIEW_VERSION__: JSON.stringify(dockviewVersion) },
   resolve: {
     alias: { "@": path.resolve(import.meta.dirname, "./src") },
   },

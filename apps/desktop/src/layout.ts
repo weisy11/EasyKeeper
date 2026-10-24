@@ -619,7 +619,7 @@ export class WorkspaceController {
     return {
       kind: "ek.layoutSnapshot",
       layoutVersion: 1,
-      adapter: { name: "dockview", version: "8.3.1" },
+      adapter: { name: "dockview", version: __DOCKVIEW_VERSION__ },
       data,
       panels: Object.values(data.panels).map((p) => ({ panel: String((p.params as { toolId?: string })?.toolId ?? p.id) })),
       chrome: { collapsedDocks: EDGES.filter((p) => this.userCollapsed[p]) },
