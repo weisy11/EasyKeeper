@@ -3,9 +3,22 @@
   "private": true,
   "version": "0.1.0",
   "packageManager": "pnpm@11.27.1",
+  "license": "Apache-2.0",
+  "author": "weisy11",
+  "homepage": "https://github.com/weisy11/EasyKeeper",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/weisy11/EasyKeeper.git"
+  },
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "pnpm --filter @ek/desktop tauri build",
+    "build:bin": "pnpm --filter @ek/desktop tauri build --no-bundle",
+    "build:app": "pnpm --filter @ek/desktop tauri build --bundles app",
+    "build:dmg": "pnpm --filter @ek/desktop tauri build --bundles dmg",
+    "build:universal": "pnpm --filter @ek/desktop tauri build --target universal-apple-darwin",
+    "build:universal:bin": "pnpm --filter @ek/desktop tauri build --target universal-apple-darwin --no-bundle",
+    "release:check": "node scripts/check-release.mjs",
     "desktop": "pnpm --filter @ek/desktop"
   }
 }

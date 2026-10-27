@@ -102,7 +102,7 @@ const strings = {
   age: { zh: "年龄", en: "Age" },
   gender: { zh: "性别", en: "Gender" },
   occupation: { zh: "职业", en: "Occupation" },
-  nativeLanguage: { zh: "母语", en: "Native language" },
+  nativeLanguage: { zh: "母语", en: "Language" },
   str: { zh: "力量", en: "STR" },
   con: { zh: "体质", en: "CON" },
   siz: { zh: "体型", en: "SIZ" },

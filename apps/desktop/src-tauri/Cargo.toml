@@ -4,6 +4,10 @@ version = "0.1.0"
 description = "EasyKeeper desktop application"
 edition = "2024"
 rust-version = "1.90"
+license = "Apache-2.0"
+authors = ["weisy11"]
+homepage = "https://github.com/weisy11/EasyKeeper"
+repository = "https://github.com/weisy11/EasyKeeper"
 
 [lib]
 name = "easykeeper_lib"
@@ -40,3 +44,11 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSOpenPanel", "NSSavePanel"] }
 objc2-web-kit = { version = "0.3", optional = true, features = ["WKWebView", "WKWebViewConfiguration", "WKPreferences"] }
+
+# Release packaging: strip debug symbols and enable fat LTO so the shipped
+# app stays small. Keeps the local release build noticeably slower.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

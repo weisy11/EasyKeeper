@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!-- Required under the hardened runtime so the app can reach the model
+         API endpoints configured in the KP Copilot panel. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+  </dict>
+</plist>

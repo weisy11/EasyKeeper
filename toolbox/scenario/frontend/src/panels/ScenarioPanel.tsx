@@ -10,8 +10,8 @@ import { MapColumn } from "./MapColumn";
 import { NpcColumn } from "./NpcColumn";
 import { SceneNav } from "./SceneNav";
 
-const LEFT_WIDTH = 220;
-const RIGHT_WIDTH = 240;
+const LEFT_SHARE = 0.25;
+const RIGHT_SHARE = 0.25;
 const MIN_COLUMN = 160;
 const MIN_CENTER = 280;
 const MIN_PANE = 72;
@@ -51,7 +51,7 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
     const frame = frameRef.current;
     if (!frame || frame.clientWidth < 80) return;
     const width = frame.clientWidth;
-    if (!shares.current) shares.current = { left: LEFT_WIDTH / width, right: RIGHT_WIDTH / width };
+    if (!shares.current) shares.current = { left: LEFT_SHARE, right: RIGHT_SHARE };
     if (leftRef.current) leftRef.current.style.width = `${shares.current.left * width}px`;
     if (rightRef.current) rightRef.current.style.width = `${shares.current.right * width}px`;
   }
@@ -116,7 +116,7 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
   return (
     <ProjectPath.Provider value={source}>
       <div ref={frameRef} className="flex h-full min-h-0 bg-border text-sm">
-        <div ref={leftRef} className="flex h-full min-h-0 min-w-0 shrink-0 flex-col" style={{ width: LEFT_WIDTH }}>
+        <div ref={leftRef} className="flex h-full min-h-0 min-w-0 shrink-0 flex-col" style={{ width: `${LEFT_SHARE * 100}%` }}>
           <section ref={(node) => { panes.current.leftTop = node; }} className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={PANE_STYLE}>
             <SceneNav locale={locale} projectPath={source} selected={selected} onSelect={setSelected} editable={editable} />
           </section>
@@ -131,7 +131,7 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
           <BodyEditor key={selected} projectPath={source} pageId={selected} editable={editable} />
         </section>
         <Separator label={t("resizeSideColumn")} orientation="vertical" onPointerDown={(event) => dragWidth(event, "right")} />
-        <div ref={rightRef} className="flex h-full min-h-0 min-w-0 shrink-0 flex-col" style={{ width: RIGHT_WIDTH }}>
+        <div ref={rightRef} className="flex h-full min-h-0 min-w-0 shrink-0 flex-col" style={{ width: `${RIGHT_SHARE * 100}%` }}>
           <section ref={(node) => { panes.current.rightTop = node; }} className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={PANE_STYLE}>
             <NpcColumn locale={locale} projectPath={source} recordPath={recordPath} selected={selected} editable={editable} />
           </section>

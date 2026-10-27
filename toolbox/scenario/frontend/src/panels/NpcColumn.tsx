@@ -603,15 +603,21 @@ function ReadOnlyActorSheet({
         <div className="grid grid-cols-[minmax(0,1fr)_11.25rem] items-start gap-x-6">
           <div className="min-w-0">
             <h2 id={titleId} className="sr-only">{actor.name}</h2>
-            <div className="grid grid-cols-4 gap-x-4 gap-y-2 border-b border-border pb-3">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2">
               <Fact label={t("fullName")} value={actor.name} />
               <Fact label={t("occupation")} value={actor.occupation} />
+            </div>
+            <div className="mt-2 grid grid-cols-3 gap-x-4 gap-y-2">
+              <Fact label={t("nativeLanguage")} value={actor.nativeLanguage} />
               <Fact label={t("gender")} value={actor.gender} />
               <Fact label={t("age")} value={actor.age} />
-              <Fact label={t("nativeLanguage")} value={actor.nativeLanguage} />
+            </div>
+            <div className="mt-2 grid grid-cols-3 gap-x-4 gap-y-2">
               <Fact label={t("damage")} value={actor.derived.damage} />
               <Fact label={t("build")} value={String(actor.derived.build)} />
               <Fact label={t("mov")} value={String(actor.derived.mov)} />
+            </div>
+            <div className="mt-2 grid grid-cols-4 gap-x-4 gap-y-2 border-b border-border pb-3">
               <Vital label={t("hp")} value={hp} editable={vitals !== null} onChange={setHp} onCommit={(value) => commit("hp", value)} />
               <Vital label={t("mp")} value={mp} editable={vitals !== null} onChange={setMp} onCommit={(value) => commit("mp", value)} />
               <Vital label={t("san")} value={san} editable={vitals !== null} onChange={setSan} onCommit={(value) => commit("san", value)} />
