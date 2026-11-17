@@ -173,6 +173,7 @@ function personFromUnknown(raw: unknown): Investigator | null {
   person.spells = text(row.spells);
   person.encounters = text(row.encounters);
   person.gear = text(row.gear);
+  person.spendingLevel = text(row.spendingLevel);
   person.cash = text(row.cash);
   person.assets = text(row.assets);
   person.weapons = list(row.weapons).map(weaponFromUnknown).filter((item): item is Weapon => item !== null);

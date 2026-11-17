@@ -1,4 +1,4 @@
-import { ImagePlus, Plus, User, X } from "lucide-react";
+import { Calculator, ImagePlus, Plus, User, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { savePastedImage, useProjectImage, type ToolPanelProps } from "@ek/tool-api";
 import {
@@ -12,6 +12,7 @@ import {
   type Skill,
   type Weapon,
 } from "../db";
+import { investigatorDerived } from "../derived";
 import { characterT, type CharacterLocale, type CharacterStringKey } from "../i18n";
 import { useCharacterLocale } from "../locale";
 import { createTimestampedFolder, pickExportFolder, pickFolder, readInvestigatorFolder, writeInvestigatorFolder } from "../transfer";
@@ -30,12 +31,12 @@ export function CharacterPanel({ projectPath }: ToolPanelProps) {
   const [addMenu, setAddMenu] = useState<{ x: number; y: number } | null>(null);
   const [exporting, setExporting] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
-  const [creatingId, setCreatingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<Investigator | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
+  const savingRef = useRef(false);
   const ready = useRef(false);
-  const timers = useRef<Record<string, number>>({});
   const chains = useRef<Record<string, Promise<void>>>({});
-  const baseline = useRef<Investigator | null>(null);
-  const current = people.find((person) => person.id === openId) ?? null;
 
   useEffect(() => {
     ready.current = false;
@@ -45,82 +46,94 @@ export function CharacterPanel({ projectPath }: ToolPanelProps) {
       ready.current = true;
       setPeople(rows);
       setOpenId(null);
-      setCreatingId(null);
+      setDraft(null);
       setMode("edit");
     }).catch((error: unknown) => console.error(error));
-    const pending = timers.current;
     return () => {
       cancelled = true;
-      for (const timer of Object.values(pending)) window.clearTimeout(timer);
     };
   }, [projectPath]);
 
   function enqueue(id: string, job: () => Promise<void>) {
-    if (!ready.current || !canSaveInvestigators() || !projectPath) return;
+    if (!ready.current || !canSaveInvestigators() || !projectPath) return Promise.resolve();
     const previous = chains.current[id] ?? Promise.resolve();
-    const next = previous.catch(() => undefined).then(job).catch((error: unknown) => console.error(error));
+    const next = previous.catch(() => undefined).then(job);
     chains.current[id] = next;
+    void next.catch((error: unknown) => console.error(error));
+    return next;
   }
 
-  function scheduleSave(next: Investigator) {
-    if (!ready.current || !canSaveInvestigators() || !projectPath) return;
-    window.clearTimeout(timers.current[next.id]);
-    timers.current[next.id] = window.setTimeout(() => {
-      enqueue(next.id, () => saveInvestigator(projectPath, next));
-    }, 400);
-  }
-
-  function update(next: Investigator) {
-    setPeople((rows) => rows.map((row) => (row.id === next.id ? next : row)));
-    scheduleSave(next);
-  }
+  useEffect(() => {
+    const flush = (event: Event) => {
+      const detail = (event as CustomEvent<{ pending: Promise<void>[] }>).detail;
+      detail?.pending.push(...Object.values(chains.current));
+    };
+    window.addEventListener("ek:flush", flush);
+    window.addEventListener("ek:flush-pages", flush);
+    return () => {
+      window.removeEventListener("ek:flush", flush);
+      window.removeEventListener("ek:flush-pages", flush);
+    };
+  }, []);
 
   function beginEdit(id: string, nextMode: "edit" | "brief") {
     const person = people.find((row) => row.id === id);
     if (!person) return;
-    baseline.current = structuredClone(person);
-    setCreatingId(null);
+    setDraft(structuredClone(person));
+    setSaveFailed(false);
     setMode(nextMode);
     setOpenId(id);
   }
 
   function openCompact(id: string) {
-    setCreatingId(null);
+    const person = people.find((row) => row.id === id);
+    if (!person) return;
+    setDraft(structuredClone(person));
+    setSaveFailed(false);
     setMode("compact");
     setOpenId(id);
   }
 
   function add(nextMode: "edit" | "brief") {
     const next = emptyInvestigator(crypto.randomUUID(), people.length);
-    baseline.current = null;
-    setPeople((rows) => [...rows, next]);
-    setCreatingId(next.id);
+    setDraft(next);
+    setSaveFailed(false);
     setMode(nextMode);
     setOpenId(next.id);
-    scheduleSave(next);
-  }
-
-  function keep() {
-    setCreatingId(null);
-    setOpenId(null);
   }
 
   function discard() {
-    if (!current) return;
-    const id = current.id;
-    window.clearTimeout(timers.current[id]);
-    delete timers.current[id];
+    if (savingRef.current) return;
+    setDraft(null);
+    setSaveFailed(false);
     setOpenId(null);
-    if (creatingId === id) {
-      setCreatingId(null);
-      setPeople((rows) => rows.filter((row) => row.id !== id));
-      enqueue(id, () => deleteInvestigator(projectPath, id));
+  }
+
+  async function saveDraft(close: boolean) {
+    if (!draft || savingRef.current) return;
+    if (!ready.current || !canSaveInvestigators() || !projectPath) {
+      setSaveFailed(true);
       return;
     }
-    const snapshot = baseline.current;
-    if (!snapshot || snapshot.id !== id) return;
-    setPeople((rows) => rows.map((row) => (row.id === id ? snapshot : row)));
-    enqueue(id, () => saveInvestigator(projectPath, snapshot));
+    savingRef.current = true;
+    setSaving(true);
+    setSaveFailed(false);
+    const next = structuredClone(draft);
+    try {
+      await enqueue(next.id, () => saveInvestigator(projectPath, next));
+      setPeople((rows) => rows.some((row) => row.id === next.id)
+        ? rows.map((row) => row.id === next.id ? next : row)
+        : [...rows, next]);
+      if (close) {
+        setDraft(null);
+        setOpenId(null);
+      }
+    } catch {
+      setSaveFailed(true);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
   }
 
   useEffect(() => {
@@ -134,11 +147,8 @@ export function CharacterPanel({ projectPath }: ToolPanelProps) {
   }, [menu, addMenu]);
 
   function remove(id: string) {
-    window.clearTimeout(timers.current[id]);
-    delete timers.current[id];
     setPeople((rows) => rows.filter((row) => row.id !== id));
     setOpenId((currentId) => (currentId === id ? null : currentId));
-    setCreatingId((currentId) => (currentId === id ? null : currentId));
     enqueue(id, () => deleteInvestigator(projectPath, id));
   }
 
@@ -165,8 +175,8 @@ export function CharacterPanel({ projectPath }: ToolPanelProps) {
     const rows = await readInvestigatorFolder(path, projectPath);
     if (!rows || rows.length === 0) return;
     const imported = rows.map((row, index) => ({ ...row, id: crypto.randomUUID(), position: people.length + index }));
+    await Promise.all(imported.map((row) => enqueue(row.id, () => saveInvestigator(projectPath, row))));
     setPeople((current) => [...current, ...imported]);
-    for (const row of imported) scheduleSave(row);
   }
 
   return (
@@ -310,25 +320,27 @@ export function CharacterPanel({ projectPath }: ToolPanelProps) {
           </div>
         </div>
       )}
-      {current && mode === "compact" && (
-        <CompactSheet projectPath={projectPath} locale={locale} investigator={current} onChange={update} onClose={keep} />
+      {draft && mode === "compact" && (
+        <CompactSheet projectPath={projectPath} locale={locale} investigator={draft} onChange={setDraft} onClose={discard}
+          saving={saving} saveFailed={saveFailed} onApply={() => void saveDraft(false)} onConfirm={() => void saveDraft(true)} />
       )}
-      {current && (mode === "edit" || mode === "brief") && (
+      {draft && (mode === "edit" || mode === "brief") && (
         <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-6">
           <div
             role="dialog"
-            aria-label={current.name.trim() || t("untitled")}
-            className="flex max-h-full w-[min(1080px,100%)] flex-col overflow-hidden rounded-md border border-border bg-background shadow-lg"
+            aria-label={draft.name.trim() || t("untitled")}
+            className={`flex max-h-full flex-col overflow-hidden rounded-md border border-border bg-background shadow-lg ${mode === "brief" ? "w-[min(810px,100%)]" : "w-[min(1080px,100%)]"}`}
             onPointerDown={(event) => event.stopPropagation()}
           >
             <div className="flex shrink-0 justify-end border-b border-border px-2 py-1">
-              <button type="button" aria-label={t("close")} className="grid size-7 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" onClick={keep}>
+              <button type="button" aria-label={t("close")} disabled={saving} className="grid size-7 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50" onClick={discard}>
                 <X className="size-4" />
               </button>
             </div>
-            <div className="min-h-0 overflow-auto">
-              <Sheet projectPath={projectPath} locale={locale} investigator={current} brief={mode === "brief"} onChange={update} onClose={discard} />
+            <div className="min-h-0 flex-1 overflow-auto">
+              <Sheet projectPath={projectPath} locale={locale} investigator={draft} brief={mode === "brief"} onChange={setDraft} saving={saving} />
             </div>
+            <FormActions locale={locale} saving={saving} saveFailed={saveFailed} onCancel={discard} onApply={() => void saveDraft(false)} onConfirm={() => void saveDraft(true)} />
           </div>
         </div>
       )}
@@ -342,12 +354,20 @@ function CompactSheet({
   investigator,
   onChange,
   onClose,
+  saving,
+  saveFailed,
+  onApply,
+  onConfirm,
 }: {
   projectPath: string;
   locale: CharacterLocale;
   investigator: Investigator;
   onChange: (next: Investigator) => void;
   onClose: () => void;
+  saving: boolean;
+  saveFailed: boolean;
+  onApply: () => void;
+  onConfirm: () => void;
 }) {
   const t = (key: CharacterStringKey) => characterT(locale, key);
   const [hp, setHp] = useState(String(investigator.hp));
@@ -375,11 +395,11 @@ function CompactSheet({
         onPointerDown={(event) => event.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-end border-b border-border px-3 py-2">
-          <button type="button" aria-label={t("close")} className="grid size-7 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" onClick={onClose}>
+          <button type="button" disabled={saving} aria-label={t("close")} className="grid size-7 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50" onClick={onClose}>
             <X className="size-4" />
           </button>
         </div>
-        <div className="overflow-auto p-4">
+        <fieldset disabled={saving} className="min-h-0 overflow-auto p-4">
           <div className="grid grid-cols-[minmax(0,1fr)_11.25rem] items-start gap-x-6">
             <div className="min-w-0">
               <div className="grid grid-cols-4 gap-x-4 gap-y-2 border-b border-border pb-3">
@@ -434,7 +454,8 @@ function CompactSheet({
               ))}
             </div>
           </div>
-        </div>
+        </fieldset>
+        <FormActions locale={locale} saving={saving} saveFailed={saveFailed} onCancel={onClose} onApply={onApply} onConfirm={onConfirm} />
       </div>
     </div>
   );
@@ -492,27 +513,34 @@ function Sheet({
   investigator,
   brief = false,
   onChange,
-  onClose,
+  saving,
 }: {
   projectPath: string;
   locale: CharacterLocale;
   investigator: Investigator;
   brief?: boolean;
   onChange: (next: Investigator) => void;
-  onClose: () => void;
+  saving: boolean;
 }) {
   const t = (key: CharacterStringKey) => characterT(locale, key);
   const set = (patch: Partial<Investigator>) => onChange({ ...investigator, ...patch });
+  const weaponFields = brief
+    ? ["name", "skill", "damage", "attacks"] as const
+    : ["name", "skill", "damage", "attacks", "range", "ammo", "malfunction"] as const;
+  const weaponColumns = brief
+    ? "grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,0.7fr)_auto]"
+    : "grid-cols-[1.2fr_0.7fr_0.8fr_0.6fr_0.7fr_0.7fr_0.7fr_auto]";
 
   return (
-    <div className="mx-auto flex max-w-[1080px] flex-col gap-4 p-4" data-character-sheet={investigator.id} data-character-form={brief ? "brief" : "full"}>
+    <fieldset disabled={saving} className="mx-auto flex min-w-0 max-w-[1080px] flex-col gap-4 p-4" data-character-sheet={investigator.id} data-character-form={brief ? "brief" : "full"}>
       <section className="rounded-md border border-border p-3">
         <h2 className="mb-2 text-base font-semibold text-muted-foreground">{t("about")}</h2>
         <div className="grid grid-cols-[minmax(0,1fr)_7.5rem] items-stretch gap-3">
-        <div className="grid grid-cols-6 gap-2">
+        <div className={`grid gap-2 ${brief ? "grid-cols-3" : "grid-cols-6"}`}>
           <Field className="col-span-2" label={t("name")} value={investigator.name} onChange={(name) => set({ name })} />
+          {brief && <Field label={t("age")} value={investigator.age} onChange={(age) => set({ age })} />}
           <Field className="col-span-2" label={t("occupation")} value={investigator.occupation} onChange={(occupation) => set({ occupation })} />
-          <Field label={t("age")} value={investigator.age} onChange={(age) => set({ age })} />
+          {!brief && <Field label={t("age")} value={investigator.age} onChange={(age) => set({ age })} />}
           <Field label={t("gender")} value={investigator.gender} onChange={(gender) => set({ gender })} />
           {!brief && <Field className="col-span-2" label={t("player")} value={investigator.player} onChange={(player) => set({ player })} />}
           {!brief && <Field className="col-span-2" label={t("birthplace")} value={investigator.birthplace} onChange={(birthplace) => set({ birthplace })} />}
@@ -523,13 +551,24 @@ function Sheet({
       </section>
 
       <section className="rounded-md border border-border p-3">
-        <h2 className="mb-2 text-base font-semibold text-muted-foreground">{t("characteristics")}</h2>
-        <div className="grid grid-cols-8 gap-2">
+        <div className="mb-2 flex items-center gap-1.5">
+          <h2 className="text-base font-semibold text-muted-foreground">{t("characteristics")}</h2>
+          <button
+            type="button"
+            title={t("calculateDerived")}
+            aria-label={t("calculateDerived")}
+            className="grid size-6 shrink-0 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+            onClick={() => set(investigatorDerived(investigator))}
+          >
+            <Calculator className="size-4" />
+          </button>
+        </div>
+        <div className={`grid gap-2 ${brief ? "grid-cols-4" : "grid-cols-8"}`}>
           {STATS.map((key) => (
             <NumberField key={key} label={t(key)} value={investigator[key]} onChange={(value) => set({ [key]: value })} />
           ))}
         </div>
-        <div className={`mt-3 grid gap-2 border-t border-border pt-3 ${brief ? "grid-cols-8" : "grid-cols-9"}`}>
+        <div className={`mt-3 grid gap-2 border-t border-border pt-3 ${brief ? "grid-cols-4" : "grid-cols-9"}`}>
           {(brief ? ["hp", "mp", "luck", "san"] as const : POOLS).map((key) => (
             <NumberField key={key} label={t(key)} value={investigator[key]} onChange={(value) => set({ [key]: value })} />
           ))}
@@ -542,7 +581,7 @@ function Sheet({
 
       <section className="rounded-md border border-border p-3">
         <h2 className="mb-2 text-base font-semibold text-muted-foreground">{t("skills")}</h2>
-        <div className="grid grid-cols-5 gap-x-4 gap-y-3">
+        <div className={`grid gap-x-4 gap-y-3 ${brief ? "grid-cols-3" : "grid-cols-5"}`}>
           {investigator.skills.map((skill, index) => (
             <div key={index} className="flex min-w-0 items-center gap-1">
               <input
@@ -593,19 +632,13 @@ function Sheet({
 
       <section className="rounded-md border border-border p-3">
         <h2 className="mb-2 text-base font-semibold text-muted-foreground">{t("weapons")}</h2>
-        <div className="grid grid-cols-[1.2fr_0.7fr_0.8fr_0.6fr_0.7fr_0.7fr_0.7fr_auto] gap-1 text-base text-muted-foreground">
-          <span>{t("weaponName")}</span>
-          <span>{t("weaponSkill")}</span>
-          <span>{t("weaponDamage")}</span>
-          <span>{t("weaponAttacks")}</span>
-          <span>{t("weaponRange")}</span>
-          <span>{t("weaponAmmo")}</span>
-          <span>{t("weaponMalfunction")}</span>
+        <div className={`grid gap-1 text-base text-muted-foreground ${weaponColumns}`}>
+          {weaponFields.map((key) => <span key={key}>{t(weaponLabel(key))}</span>)}
           <span />
         </div>
         {investigator.weapons.map((weapon, index) => (
-          <div key={index} className="mt-1 grid grid-cols-[1.2fr_0.7fr_0.8fr_0.6fr_0.7fr_0.7fr_0.7fr_auto] gap-1">
-            {(["name", "skill", "damage", "attacks", "range", "ammo", "malfunction"] as const).map((key) => (
+          <div key={index} className={`mt-1 grid gap-1 ${weaponColumns}`}>
+            {weaponFields.map((key) => (
               <input
                 key={key}
                 value={weapon[key]}
@@ -655,7 +688,8 @@ function Sheet({
 
       {!brief && <section className="rounded-md border border-border p-3">
         <h2 className="mb-2 text-base font-semibold text-muted-foreground">{t("wealth")}</h2>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-3 gap-2">
+          <Field label={t("spendingLevel")} value={investigator.spendingLevel} onChange={(spendingLevel) => set({ spendingLevel })} />
           <Field label={t("cash")} value={investigator.cash} onChange={(cash) => set({ cash })} />
           <Field label={t("assets")} value={investigator.assets} onChange={(assets) => set({ assets })} />
         </div>
@@ -702,10 +736,26 @@ function Sheet({
         </button>
       </section>}
 
-      <div className="flex justify-end">
-        <button type="button" className="rounded-md px-3 py-1 text-muted-foreground hover:bg-muted" onClick={onClose}>
-          {t("cancel")}
-        </button>
+    </fieldset>
+  );
+}
+
+function FormActions({ locale, saving, saveFailed, onApply, onCancel, onConfirm }: {
+  locale: CharacterLocale;
+  saving: boolean;
+  saveFailed: boolean;
+  onApply: () => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const t = (key: CharacterStringKey) => characterT(locale, key);
+  return (
+    <div className="shrink-0 border-t border-border bg-background px-4 py-3">
+      {saveFailed && <p role="alert" className="mb-2 text-sm text-destructive">{t("saveFailed")}</p>}
+      <div className="flex justify-end gap-2">
+        <button type="button" data-ek-save disabled={saving} className="rounded-md px-3 py-1 hover:bg-muted disabled:opacity-50" onClick={onApply}>{t("apply")}</button>
+        <button type="button" disabled={saving} className="rounded-md px-3 py-1 hover:bg-muted disabled:opacity-50" onClick={onCancel}>{t("cancel")}</button>
+        <button type="button" disabled={saving} className="rounded-md bg-primary px-3 py-1 text-primary-foreground disabled:opacity-50" onClick={onConfirm}>{t("confirm")}</button>
       </div>
     </div>
   );

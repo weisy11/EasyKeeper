@@ -58,6 +58,7 @@ const SCHEMA = `CREATE TABLE IF NOT EXISTS ek_character_investigator (
   spells TEXT NOT NULL DEFAULT '',
   encounters TEXT NOT NULL DEFAULT '',
   gear TEXT NOT NULL DEFAULT '',
+  spending_level TEXT NOT NULL DEFAULT '',
   cash TEXT NOT NULL DEFAULT '',
   assets TEXT NOT NULL DEFAULT '',
   weapons TEXT NOT NULL DEFAULT '[]',
@@ -120,6 +121,7 @@ export type Investigator = {
   spells: string;
   encounters: string;
   gear: string;
+  spendingLevel: string;
   cash: string;
   assets: string;
   weapons: Weapon[];
@@ -168,6 +170,7 @@ type Row = {
   spells: string;
   encounters: string;
   gear: string;
+  spending_level: string;
   cash: string;
   assets: string;
   weapons: string;
@@ -226,6 +229,7 @@ function fromRow(row: Row): Investigator {
     spells: row.spells,
     encounters: row.encounters,
     gear: row.gear,
+    spendingLevel: row.spending_level,
     cash: row.cash,
     assets: row.assets,
     weapons: listOf<Weapon>(row.weapons),
@@ -276,6 +280,7 @@ export function emptyInvestigator(id: string, position: number): Investigator {
     spells: "",
     encounters: "",
     gear: "",
+    spendingLevel: "",
     cash: "",
     assets: "",
     weapons: [],
@@ -316,6 +321,9 @@ async function applySchema(projectPath: string) {
   if (!columns.some((column) => column.name === "skills")) {
     await exec(projectPath, "ALTER TABLE ek_character_investigator ADD COLUMN skills TEXT NOT NULL DEFAULT '[]'");
   }
+  if (!columns.some((column) => column.name === "spending_level")) {
+    await exec(projectPath, "ALTER TABLE ek_character_investigator ADD COLUMN spending_level TEXT NOT NULL DEFAULT ''");
+  }
 }
 
 export async function loadInvestigators(projectPath: string): Promise<Investigator[]> {
@@ -335,13 +343,13 @@ export async function saveInvestigator(projectPath: string, investigator: Invest
       str, con, siz, dex, app, edu, intellect, pow, hp, mp, luck, san, san_start,
       mov, build, damage, dodge, story, description, ideology, traits, significant_people,
       treasured, locations, injuries, phobias, tomes, spells, encounters, gear, cash, assets,
-      weapons, fellows, position, portrait, skills
+      weapons, fellows, position, portrait, skills, spending_level
     ) VALUES (
       ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
       ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21,
       ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
       ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40,
-      ?41, ?42, ?43, ?44, ?45
+      ?41, ?42, ?43, ?44, ?45, ?46
     )
     ON CONFLICT(id) DO UPDATE SET
       name = ?2, occupation = ?3, age = ?4, gender = ?5, player = ?6, birthplace = ?7, residence = ?8, portrait = ?44,
@@ -350,7 +358,7 @@ export async function saveInvestigator(projectPath: string, investigator: Invest
       mov = ?22, build = ?23, damage = ?24, dodge = ?25, story = ?26, description = ?27, ideology = ?28,
       traits = ?29, significant_people = ?30, treasured = ?31, locations = ?32, injuries = ?33, phobias = ?34,
       tomes = ?35, spells = ?36, encounters = ?37, gear = ?38, cash = ?39, assets = ?40,
-      weapons = ?41, fellows = ?42, position = ?43, skills = ?45`,
+      weapons = ?41, fellows = ?42, position = ?43, skills = ?45, spending_level = ?46`,
     [
       investigator.id, investigator.name, investigator.occupation, investigator.age, investigator.gender, investigator.player, investigator.birthplace, investigator.residence,
       investigator.str, investigator.con, investigator.siz, investigator.dex, investigator.app, investigator.edu, investigator.int, investigator.pow,
@@ -359,6 +367,7 @@ export async function saveInvestigator(projectPath: string, investigator: Invest
       investigator.traits, investigator.people, investigator.possessions, investigator.locations, investigator.injuries, investigator.phobias,
       investigator.tomes, investigator.spells, investigator.encounters, investigator.gear, investigator.cash, investigator.assets,
       JSON.stringify(investigator.weapons), JSON.stringify(investigator.fellows), investigator.position, investigator.portrait, JSON.stringify(investigator.skills),
+      investigator.spendingLevel,
     ],
   );
 }

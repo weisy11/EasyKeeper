@@ -1,3 +1,4 @@
+import { rowSelectionClass } from "./rowSelection";
 import { Filter, Plus, X } from "lucide-react";
 import { ListTrash } from "./ListTrash";
 import { useEffect, useId, useState } from "react";
@@ -187,7 +188,7 @@ export function ClueColumn({
           event.dataTransfer.setData("text/plain", article.id);
           event.dataTransfer.effectAllowed = "move";
         }}
-        className={`flex h-7 cursor-default select-none items-center gap-2 px-2.5 ${picked === article.id ? "bg-[#2563eb]/20 shadow-[inset_2px_0_0_#2563eb] dark:bg-[#60a5fa]/25 dark:shadow-[inset_2px_0_0_#60a5fa]" : "hover:bg-muted"}`}
+        className={`flex h-7 cursor-default select-none items-center gap-2 px-2.5 ${rowSelectionClass(picked === article.id)}`}
         onClick={(event) => {
           if (!editable) {
             setPicked(article.id);

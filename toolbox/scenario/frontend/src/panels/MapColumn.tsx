@@ -1,3 +1,4 @@
+import { rowSelectionClass } from "./rowSelection";
 import { savePastedImage, useProjectImage } from "@ek/tool-api";
 import { Filter, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -18,6 +19,7 @@ import { presentSceneIds, readSceneCatalog, sceneLinkRows, subscribeSceneCatalog
 export function MapColumn({ locale, projectPath, selected, editable }: { locale: ScenarioLocale; projectPath: string; selected: string; editable: boolean }) {
   const t = (key: ScenarioStringKey) => scenarioT(locale, key);
   const [maps, setMaps] = useState<ScenarioMap[]>([]);
+  const [picked, setPicked] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [preview, setPreview] = useState<ScenarioMap | null>(null);
   const [linking, setLinking] = useState<string | null>(null);
@@ -119,6 +121,7 @@ export function MapColumn({ locale, projectPath, selected, editable }: { locale:
     setMenu(null);
     if (!editable || projectPath === "") return;
     if (preview?.id === id) setPreview(null);
+    if (picked === id) setPicked(null);
     if (usingDb) {
       await deleteScenarioMap(projectPath, id);
       setMaps(await loadScenarioMaps(projectPath));
@@ -186,12 +189,14 @@ export function MapColumn({ locale, projectPath, selected, editable }: { locale:
             draggable={editable}
             data-map={map.id}
             data-map-drop={hint?.id === map.id ? hint.place : "none"}
-            className="relative block w-full cursor-grab border-b border-border bg-background p-1.5 active:cursor-grabbing"
+            data-selected={picked === map.id ? "true" : "false"}
+            className={`relative block w-full cursor-grab border-b border-border p-1.5 active:cursor-grabbing ${rowSelectionClass(picked === map.id)}`}
             onClick={() => {
               if (suppressClick.current) {
                 suppressClick.current = false;
                 return;
               }
+              setPicked(map.id);
               setPreview(map);
             }}
             onContextMenu={(event) => {

@@ -1,5 +1,6 @@
+import { rowSelectionClass } from "./rowSelection";
 import { savePastedImage, useProjectImage } from "@ek/tool-api";
-import { DicesIcon, Filter, ImagePlus, Plus, User, X } from "lucide-react";
+import { Calculator, DicesIcon, Filter, ImagePlus, Plus, User, X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { applyActorArticles, publishActorIndex, publishArticles, readArticles, subscribeArticles } from "../articleStore";
 import { derive, rollCharacteristics, type Characteristics, type Derived } from "../cocSheet";
@@ -286,7 +287,7 @@ export function NpcColumn({
           event.dataTransfer.setData("text/plain", actor.id);
           event.dataTransfer.effectAllowed = "move";
         }}
-        className={`flex h-7 cursor-default select-none items-center gap-2 px-2.5 ${picked === actor.id ? "bg-[#2563eb]/20 shadow-[inset_2px_0_0_#2563eb] dark:bg-[#60a5fa]/25 dark:shadow-[inset_2px_0_0_#60a5fa]" : "hover:bg-muted"}`}
+        className={`flex h-7 cursor-default select-none items-center gap-2 px-2.5 ${rowSelectionClass(picked === actor.id)}`}
         onClick={(event) => {
           if (!editable) {
             setPicked(actor.id);
@@ -388,7 +389,7 @@ export function NpcColumn({
                 key={monster.id}
                 data-monster={monster.id}
                 data-selected={picked === monster.id ? "true" : "false"}
-                className={`flex h-7 cursor-default select-none items-center pl-7 pr-2.5 ${picked === monster.id ? "bg-[#2563eb]/20 shadow-[inset_2px_0_0_#2563eb] dark:bg-[#60a5fa]/25 dark:shadow-[inset_2px_0_0_#60a5fa]" : "hover:bg-muted"}`}
+                className={`flex h-7 cursor-default select-none items-center pl-7 pr-2.5 ${rowSelectionClass(picked === monster.id)}`}
                 onClick={() => {
                   setPicked(monster.id);
                   setMonsterId(monster.id);
@@ -998,9 +999,8 @@ function ActorDialog({
     });
   }, [catalog]);
 
-  function applyStats(nextAge: string, nextStats: typeof EMPTY_STAT_TEXT) {
-    if (kind !== "npc") return;
-    setDerivedText(derivedFieldsFrom(characteristicsFrom(nextStats), nextAge));
+  function calculateDerived() {
+    setDerivedText(derivedFieldsFrom(characteristicsFrom(statText), age));
   }
 
   function updateSkill(index: number, patch: Partial<Pick<SkillDraft, "name" | "value">>) {
@@ -1016,7 +1016,6 @@ function ActorDialog({
     const next = { ...EMPTY_STAT_TEXT };
     for (const key of STAT_KEYS) next[key] = String(rolled[key]);
     setStatText(next);
-    applyStats(age, next);
   }
 
   function submit(close: boolean) {
@@ -1155,10 +1154,36 @@ function ActorDialog({
           submit(true);
         }}
       >
-        <div className="mb-3 flex items-start justify-between gap-3">
-          <h2 id={titleId} className="min-w-0 text-base font-semibold">
-            {actor ? name.trim() || (kind === "npc" ? t("untitledNpc") : t("untitledMonster")) : kind === "npc" ? t("newCocNpc") : t("quickMonster")}
-          </h2>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <h2 id={titleId} className="min-w-0 truncate text-base font-semibold">
+              {actor ? (kind === "npc" ? t("editNpc") : t("editMonster")) : kind === "npc" ? t("newCocNpc") : t("quickMonster")}
+            </h2>
+            {kind === "npc" && editable && (
+              <div className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  title={t("rollAttributes")}
+                  aria-label={t("rollAttributes")}
+                  disabled={saving}
+                  className="grid size-7 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                  onClick={rollNine}
+                >
+                  <DicesIcon className="size-4" />
+                </button>
+                <button
+                  type="button"
+                  title={t("calculateDerived")}
+                  aria-label={t("calculateDerived")}
+                  disabled={saving}
+                  className="grid size-7 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                  onClick={calculateDerived}
+                >
+                  <Calculator className="size-4" />
+                </button>
+              </div>
+            )}
+          </div>
           <button type="button" aria-label={t("close")} className="grid size-7 shrink-0 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" onClick={onCancel}>
             <X className="size-4" />
           </button>
@@ -1174,21 +1199,9 @@ function ActorDialog({
                 label={t("age")}
                 value={age}
                 numeric
-                onChange={(value) => {
-                  setAge(value);
-                  applyStats(value, statText);
-                }}
+                onChange={setAge}
               />
               <div className="col-start-5 row-start-1 row-span-5 flex h-full w-full flex-col items-center self-stretch">
-                <button
-                  type="button"
-                  title={t("rollAttributes")}
-                  aria-label={t("rollAttributes")}
-                  className="mb-1 grid size-9 shrink-0 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-                  onClick={rollNine}
-                >
-                  <DicesIcon className="size-4" />
-                </button>
                 <PortraitPicker
                   projectPath={projectPath}
                   src={portrait}
@@ -1203,11 +1216,7 @@ function ActorDialog({
                   label={t(key)}
                   value={statText[key]}
                   numeric
-                  onChange={(value) => {
-                    const next = { ...statText, [key]: value };
-                    setStatText(next);
-                    applyStats(age, next);
-                  }}
+                  onChange={(value) => setStatText((current) => ({ ...current, [key]: value }))}
                 />
               ))}
               <Field label={t("damage")} value={derivedText.damage} onChange={(value) => setDerivedText((current) => ({ ...current, damage: value }))} />
@@ -1301,7 +1310,7 @@ function ActorDialog({
         </fieldset>
         <div className="mt-3 flex justify-end gap-2">
           {editable && (
-            <button type="button" disabled={saving} className="rounded-md px-3 py-1 hover:bg-muted disabled:opacity-50" onClick={() => submit(false)}>
+            <button type="button" data-ek-save disabled={saving} className="rounded-md px-3 py-1 hover:bg-muted disabled:opacity-50" onClick={() => submit(false)}>
               {t("apply")}
             </button>
           )}
@@ -1310,7 +1319,7 @@ function ActorDialog({
           </button>
           {editable && (
             <button type="submit" disabled={saving} className="rounded-md bg-primary px-3 py-1 text-primary-foreground disabled:opacity-50">
-              {actor ? t("save") : t("create")}
+              {actor ? t("ok") : t("create")}
             </button>
           )}
         </div>

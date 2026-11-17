@@ -1,5 +1,5 @@
-import type { ToolPanelProps } from "@ek/tool-api";
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { appKv, type ToolPanelProps } from "@ek/tool-api";
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { scenarioT, type ScenarioStringKey } from "../i18n";
 import { useScenarioLocale } from "../locale";
 import { clearCurrentScene, publishCurrentScene } from "../moduleData";
@@ -9,11 +9,8 @@ import { ClueColumn } from "./ClueColumn";
 import { MapColumn } from "./MapColumn";
 import { NpcColumn } from "./NpcColumn";
 import { SceneNav } from "./SceneNav";
+import { columnLayoutKey, fitColumns, MIN_CENTER, MIN_COLUMN, readColumnShares } from "./columnLayout";
 
-const LEFT_SHARE = 0.25;
-const RIGHT_SHARE = 0.25;
-const MIN_COLUMN = 160;
-const MIN_CENTER = 280;
 const MIN_PANE = 72;
 
 function paneHeight(ratio: number) {
@@ -43,19 +40,20 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
   });
   // Column sizes are written straight to the DOM. Dragging a separator or resizing the window
   // then moves the panes without re-rendering the five columns inside them.
-  const shares = useRef<{ left: number; right: number } | null>(null);
+  const storageKey = columnLayoutKey(mode);
+  const [initialShares] = useState(() => readColumnShares(appKv.get(storageKey)));
+  const shares = useRef({ ...initialShares });
+  const stopDrag = useRef<(() => void) | null>(null);
   const ratios = useRef({ left: 0.5, right: 0.5 });
-  const applySizeRef = useRef<() => void>(() => {});
 
   function applySize() {
     const frame = frameRef.current;
-    if (!frame || frame.clientWidth < 80) return;
+    if (!frame || frame.clientWidth <= 0) return;
     const width = frame.clientWidth;
-    if (!shares.current) shares.current = { left: LEFT_SHARE, right: RIGHT_SHARE };
-    if (leftRef.current) leftRef.current.style.width = `${shares.current.left * width}px`;
-    if (rightRef.current) rightRef.current.style.width = `${shares.current.right * width}px`;
+    const fitted = fitColumns(width, shares.current);
+    if (leftRef.current) leftRef.current.style.width = `${fitted.left}px`;
+    if (rightRef.current) rightRef.current.style.width = `${fitted.right}px`;
   }
-  applySizeRef.current = applySize;
 
   function applyRatio(side: "left" | "right") {
     const ratio = side === "left" ? ratios.current.left : ratios.current.right;
@@ -70,30 +68,52 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
     return () => clearCurrentScene(source);
   }, [source, selected]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const frame = frameRef.current;
     if (!frame) return;
-    const observer = new ResizeObserver(() => applySizeRef.current());
+    shares.current = readColumnShares(appKv.get(storageKey));
+    const observer = new ResizeObserver(() => applySize());
     observer.observe(frame);
-    applySizeRef.current();
-    return () => observer.disconnect();
-  }, []);
+    applySize();
+    return () => {
+      observer.disconnect();
+      stopDrag.current?.();
+      stopDrag.current = null;
+    };
+  }, [storageKey]);
 
   function dragWidth(event: ReactPointerEvent<HTMLDivElement>, edge: "left" | "right") {
     const frame = frameRef.current;
+    if (!frame || frame.clientWidth <= MIN_CENTER + 2) return;
+    stopDrag.current?.();
     const share = shares.current;
-    if (!frame || !share || frame.clientWidth < 80) return;
+    const key = storageKey;
     const width = frame.clientWidth;
-    const origin = (edge === "left" ? share.left : share.right) * width;
-    const other = (edge === "left" ? share.right : share.left) * width;
-    const max = Math.max(MIN_COLUMN, width - other - MIN_CENTER - 2);
-    drag(event, "x", (point) => {
+    const fitted = fitColumns(width, share);
+    const origin = fitted[edge];
+    const other = fitted[edge === "left" ? "right" : "left"];
+    const min = Math.min(MIN_COLUMN, Math.max(0, width - MIN_CENTER - 2) / 2);
+    const max = Math.max(min, width - other - MIN_CENTER - 2);
+    let changed = false;
+    const save = () => {
+      if (!changed) return;
+      appKv.set(key, JSON.stringify({ version: 1, ...share }));
+      changed = false;
+    };
+    const flush = () => save();
+    window.addEventListener("ek:flush", flush);
+    stopDrag.current = drag(event, "x", (point) => {
       const delta = edge === "left" ? point : -point;
-      const next = Math.min(max, Math.max(MIN_COLUMN, origin + delta));
-      const portion = next / frame.clientWidth;
-      if (edge === "left") share.left = portion;
-      else share.right = portion;
+      const next = Math.min(max, Math.max(min, origin + delta));
+      if (next === origin && !changed) return;
+      // Base both shares on visible widths when the user starts adjusting a constrained layout.
+      share[edge] = next / width;
+      share[edge === "left" ? "right" : "left"] = other / width;
+      changed = true;
       applySize();
+    }, () => {
+      window.removeEventListener("ek:flush", flush);
+      save();
     });
   }
 
@@ -104,7 +124,8 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
     if (span <= MIN_PANE * 2) return;
     const ratio = side === "left" ? ratios.current.left : ratios.current.right;
     const origin = ratio * span;
-    drag(event, "y", (point) => {
+    stopDrag.current?.();
+    stopDrag.current = drag(event, "y", (point) => {
       const next = Math.min(span - MIN_PANE, Math.max(MIN_PANE, origin + point));
       const value = next / span;
       if (side === "left") ratios.current.left = value;
@@ -116,7 +137,7 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
   return (
     <ProjectPath.Provider value={source}>
       <div ref={frameRef} className="flex h-full min-h-0 bg-border text-sm">
-        <div ref={leftRef} className="flex h-full min-h-0 min-w-0 shrink-0 flex-col" style={{ width: `${LEFT_SHARE * 100}%` }}>
+        <div ref={leftRef} className="flex h-full min-h-0 min-w-0 shrink-0 flex-col" style={{ width: `${initialShares.left * 100}%` }}>
           <section ref={(node) => { panes.current.leftTop = node; }} className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={PANE_STYLE}>
             <SceneNav locale={locale} projectPath={source} selected={selected} onSelect={setSelected} editable={editable} />
           </section>
@@ -131,7 +152,7 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
           <BodyEditor key={selected} projectPath={source} pageId={selected} editable={editable} />
         </section>
         <Separator label={t("resizeSideColumn")} orientation="vertical" onPointerDown={(event) => dragWidth(event, "right")} />
-        <div ref={rightRef} className="flex h-full min-h-0 min-w-0 shrink-0 flex-col" style={{ width: `${RIGHT_SHARE * 100}%` }}>
+        <div ref={rightRef} className="flex h-full min-h-0 min-w-0 shrink-0 flex-col" style={{ width: `${initialShares.right * 100}%` }}>
           <section ref={(node) => { panes.current.rightTop = node; }} className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-background" style={PANE_STYLE}>
             <NpcColumn locale={locale} projectPath={source} recordPath={recordPath} selected={selected} editable={editable} />
           </section>
@@ -145,7 +166,7 @@ export function ScenarioPanel({ projectPath, modulePath, mode, moduleEditable }:
   );
 }
 
-function drag(event: ReactPointerEvent<HTMLDivElement>, axis: "x" | "y", apply: (delta: number) => void) {
+function drag(event: ReactPointerEvent<HTMLDivElement>, axis: "x" | "y", apply: (delta: number) => void, complete?: () => void) {
   event.preventDefault();
   const handle = event.currentTarget;
   const pointerId = event.pointerId;
@@ -159,15 +180,25 @@ function drag(event: ReactPointerEvent<HTMLDivElement>, axis: "x" | "y", apply: 
     if (next.pointerId !== pointerId) return;
     apply((axis === "x" ? next.clientX : next.clientY) - start);
   };
-  const end = (next: PointerEvent) => {
-    if (next.pointerId !== pointerId) return;
+  let ended = false;
+  const cleanup = () => {
+    if (ended) return;
+    ended = true;
     handle.removeEventListener("pointermove", move);
     handle.removeEventListener("pointerup", end);
     handle.removeEventListener("pointercancel", end);
+    handle.removeEventListener("lostpointercapture", end);
+    if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+    complete?.();
+  };
+  const end = (next: PointerEvent) => {
+    if (next.pointerId === pointerId) cleanup();
   };
   handle.addEventListener("pointermove", move);
   handle.addEventListener("pointerup", end);
   handle.addEventListener("pointercancel", end);
+  handle.addEventListener("lostpointercapture", end);
+  return cleanup;
 }
 
 function Separator({

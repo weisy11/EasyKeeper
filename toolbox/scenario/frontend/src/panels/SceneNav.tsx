@@ -1,3 +1,4 @@
+import { rowSelectionClass } from "./rowSelection";
 import { ChevronRight, FileText, MoreHorizontal, Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { createScenarioNode, deleteScenarioNode, duplicateScenarioNode, loadScenarioForest, placeScenarioNodes, projectDatabaseAvailable, renameScenarioNode, TRASH_ID, type ScenarioTreeNode } from "../db";
@@ -553,7 +554,7 @@ export function SceneNav({
             }}
             data-selected={picked.includes(node.id) ? "true" : "false"}
             data-marked={chosen ? "true" : "false"}
-            className={`group relative flex h-7 items-center gap-1 pr-1 ${chosen ? "bg-[#2563eb]/20 shadow-[inset_2px_0_0_#2563eb] dark:bg-[#60a5fa]/25 dark:shadow-[inset_2px_0_0_#60a5fa]" : "hover:bg-muted"} ${marked === "inside" ? "ring-1 ring-inset ring-primary" : ""}`}
+            className={`group relative flex h-7 items-center gap-1 pr-1 ${rowSelectionClass(chosen)} ${marked === "inside" ? "ring-1 ring-inset ring-primary" : ""}`}
             style={{ paddingLeft: 8 + depth * 14 }}
           >
             {marked === "before" && <span className="absolute inset-x-2 top-0 h-0.5 bg-primary" />}
