@@ -16,6 +16,16 @@ A tabletop RPG toolbox designed for CoC Keepers — open source, free, and conne
 
   Investigator sheets are created in play mode as well, written straight into the game record — they belong to that game, not to the scenario.
 
+### Documentation
+
+- [Documentation index](docs/en_US/README.md)
+- [Quick Start](docs/en_US/quick-start.md)
+- [Prep and Play](docs/en_US/prep-and-play.md)
+- [Scenario Tool](docs/en_US/scenario.md)
+- [KP Copilot](docs/en_US/copilot.md)
+- [Character Tool](docs/en_US/character.md)
+- [Dice Tool](docs/en_US/dice.md)
+
 ### Download and install
 
 macOS only.

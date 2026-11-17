@@ -1,6 +1,6 @@
 ## Prep and Play
 
-[← Back to the docs index](README.md)
+[← Back to the docs index](README.md) · [简体中文](../zh_CN/prep-and-play.md)
 
 When you open EasyKeeper, you land on the welcome page, where you choose between editing a scenario (prep mode) and running a game record (play mode). The tools behave differently in the two modes, and the rest of the documentation covers each of them in turn. Here we want to introduce one of EasyKeeper's most important features: the separation of data between a scenario and a game record.
 
@@ -11,7 +11,9 @@ There are many tools on the market for organizing a scenario. Some of them split
 If this is your first time using EasyKeeper, the first thing to do is create a scenario. Here you can structure the scenario's data; the scenario guide covers these features in detail.
 Once you have a scenario, you create a game record to hold the data for one session. In play mode you can read anything the scenario holds without worrying about changing it.
 
-<img src="../images/pick-scenario-en.png" alt="The Select a scenario page that opens when you run a game with a scenario: it lists the scenario folders on disk, and picking one enables Next so you can create the game record" width="600" />
+On the home page, click **Run a game with a scenario**, select the scenario folder in the system dialog, then create a game record. Use **Continue a game** to open that record for later sessions.
+
+If the scenario has moved, opening the record prompts you to locate its folder. If you cannot find it, choose **Open record only** to access investigators and other available record data; the scenario area will remain empty.
 
 Take the NPC Dr. Halloway, whose starting HP is 11. A fight breaks out during the game and his HP drops to 9. All you have to do is change the HP value, right there on the sheet. The change is saved in the game record's files, so your edits never contaminate the scenario. You will also notice that in play mode everything except a handful of status values is read-only, for the same reason.
 The same separation handles the harder case. If you need to run one scenario for two different groups, give each group its own game record and the two sets of data never mix.

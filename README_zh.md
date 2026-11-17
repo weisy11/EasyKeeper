@@ -18,13 +18,13 @@
 
 ### 使用文档
 
+- [文档目录](docs/zh_CN/README.md)
 - [快速上手](docs/zh_CN/quick-start.md)
 - [备团与跑团](docs/zh_CN/prep-and-play.md)
 - [模组工具](docs/zh_CN/scenario.md)
 - [KP Copilot](docs/zh_CN/copilot.md)
 - [角色工具](docs/zh_CN/character.md)
 - [骰子工具](docs/zh_CN/dice.md)
-- [未来计划](docs/zh_CN/about_future.md)
 
 ### 下载与安装
 

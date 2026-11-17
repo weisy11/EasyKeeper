@@ -1,6 +1,6 @@
 ## Scenario Tool
 
-[← Back to the docs index](README.md)
+[← Back to the docs index](README.md) · [简体中文](../zh_CN/scenario.md)
 
 The scenario tool is the core of EasyKeeper. It lets you structure a scenario quickly, and helps you find the information you need while running a game.
 
@@ -49,7 +49,7 @@ The NPCs and monsters list is in the top right.
 
 In prep mode, click the + button to create an NPC or a monster.
 
-The NPC form has a lot more fields — and you can leave any of them empty if you do not need them. Fill in an NPC's characteristics and the form calculates HP and the other derived values automatically. You can also change those numbers by hand.
+The NPC form has a lot more fields — and you can leave any of them empty if you do not need them. After filling in an NPC's characteristics, click the calculator beside **Characteristics** to calculate HP, MP, SAN, damage bonus, build, and movement rate. This replaces the existing values in those fields; you can also enter or adjust them by hand.
 
 <div align="center">
 <img src="../images/npc-form-en.png" alt="Creating a CoC NPC: name, occupation, the eight characteristics, starting stats, skills, weapons and spells, plus options for linking scenes and clues" width="600" />
