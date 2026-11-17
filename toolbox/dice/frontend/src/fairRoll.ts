@@ -15,8 +15,11 @@ export const MAX_DICE_PER_ROLL = 40;
 
 export type ExprErrorKind = "empty" | "noDice" | "invalid" | "unsupported" | "tooMany";
 
+export type DiceGroup = { type: string; count: number; sign: 1 | -1 };
+export type ValidExpr = { ok: true; expression: string; dice: string[]; groups: DiceGroup[]; modifier: number };
+
 export type NormalizedExpr =
-  | { ok: true; expression: string; dice: string[] }
+  | ValidExpr
   | { ok: false; error: ExprErrorKind; detail?: string };
 
 /** Uniform integer in `[0, maxExclusive)`. */
@@ -32,83 +35,75 @@ export function cryptoUniform(maxExclusive: number): number {
   return x % maxExclusive;
 }
 
-export function expandDiceTerms(notation: string): string[] {
-  const dice: string[] = [];
-  const re = /(\d*)(d\d+|d%)/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(notation)) !== null) {
-    const count = m[1] ? Number.parseInt(m[1], 10) : 1;
-    const type = m[2].toLowerCase() === "d%" ? "d100" : m[2].toLowerCase();
-    for (let i = 0; i < Math.max(1, count); i++) dice.push(type);
-  }
-  return dice;
-}
-
 const DIE_ORDER = ["d4", "d6", "d8", "d10", "d12", "d20", "d100"] as const;
+const MAX_EXPRESSION_LENGTH = 1024;
 
-/** Merge like `d4+d4` → `2d4`; keeps a trailing constant (`2d6+1`). */
-export function compactDiceExpression(notation: string): string {
-  const text = (notation.split("@")[0] ?? "").replace(/\s+/g, "");
-  if (!text) return "";
-
-  const counts = new Map<string, number>();
-  const re = /(\d*)(d\d+|d%)/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const count = m[1] ? Number.parseInt(m[1], 10) : 1;
-    const type = m[2].toLowerCase() === "d%" ? "d100" : m[2].toLowerCase();
-    counts.set(type, (counts.get(type) ?? 0) + Math.max(1, count));
+/** Validate counts before allocating dice; each signed group represents separate random rolls. */
+export function normalizeDiceExpression(notation: string): NormalizedExpr {
+  if (notation.length > MAX_EXPRESSION_LENGTH) return { ok: false, error: "invalid" };
+  const raw = notation.replace(/\s+/g, "").toLowerCase();
+  if (!raw) return { ok: false, error: "empty" };
+  const terms: DiceGroup[] = [];
+  let offset = 0;
+  let countTotal = 0;
+  let modifier = 0;
+  while (offset < raw.length) {
+    const match = /^([+-]?)(\d*)(d(?:\d+|%))/.exec(raw.slice(offset));
+    if (!match || (offset > 0 && !match[1])) return { ok: false, error: "invalid" };
+    const count = match[2] ? Number(match[2]) : 1;
+    const type = match[3] === "d%" ? "d100" : match[3];
+    if (!Number.isFinite(count) || count > MAX_DICE_PER_ROLL) return { ok: false, error: "tooMany" };
+    if (!Number.isSafeInteger(count) || count <= 0) return { ok: false, error: "invalid" };
+    if (!DIE_FACES[type]) return { ok: false, error: "unsupported", detail: type };
+    countTotal += count;
+    if (countTotal > MAX_DICE_PER_ROLL) return { ok: false, error: "tooMany" };
+    terms.push({ type, count, sign: match[1] === "-" ? -1 : 1 });
+    offset += match[0].length;
+    const rest = raw.slice(offset);
+    if (/^[+-]\d+$/.test(rest)) {
+      modifier = Number(rest);
+      // Leave enough headroom for all supported dice so the displayed result stays exact.
+      if (!Number.isSafeInteger(modifier) || Math.abs(modifier) > Number.MAX_SAFE_INTEGER - MAX_DICE_PER_ROLL * 100) {
+        return { ok: false, error: "invalid" };
+      }
+      offset = raw.length;
+    }
   }
-
-  let constant = 0;
-  const rest = text.replace(/(\d*)(d\d+|d%)/gi, "");
-  const constRe = /([+-]\d+)/g;
-  let cm: RegExpExecArray | null;
-  while ((cm = constRe.exec(rest)) !== null) {
-    constant += Number.parseInt(cm[1], 10);
-  }
-
-  const parts: string[] = [];
+  if (!terms.length) return { ok: false, error: "noDice" };
+  const groups: DiceGroup[] = [];
   for (const type of DIE_ORDER) {
-    const n = counts.get(type);
-    if (!n) continue;
-    parts.push(n === 1 ? type : `${n}${type}`);
-    counts.delete(type);
+    for (const sign of [1, -1] as const) {
+      const count = terms.filter((term) => term.type === type && term.sign === sign)
+        .reduce((sum, term) => sum + term.count, 0);
+      if (count) groups.push({ type, count, sign });
+    }
   }
-  for (const [type, n] of counts) {
-    parts.push(n === 1 ? type : `${n}${type}`);
-  }
-
-  let out = parts.join("+");
-  if (constant > 0) out += `+${constant}`;
-  else if (constant < 0) out += String(constant);
-  return out;
+  const expression = groups.map((group, i) =>
+    `${group.sign < 0 ? "-" : i ? "+" : ""}${group.count === 1 ? "" : group.count}${group.type}`,
+  ).join("") + (modifier > 0 ? `+${modifier}` : modifier < 0 ? String(modifier) : "");
+  const dice = groups.flatMap((group) => Array<string>(group.count).fill(group.type));
+  return { ok: true, expression, dice, groups, modifier };
 }
 
-/**
- * Reject junk the engine would choke on (unknown types, leftover letters, too many dice).
- * Returns a compacted expression safe to send to dice-box-threejs.
- */
-export function normalizeDiceExpression(notation: string): NormalizedExpr {
-  const raw = (notation.split("@")[0] ?? "").replace(/\s+/g, "");
-  if (!raw) return { ok: false, error: "empty" };
+export function expandDiceTerms(notation: string): string[] {
+  const normalized = normalizeDiceExpression(notation.split("@")[0] ?? "");
+  return normalized.ok ? normalized.dice : [];
+}
 
-  // Only dice terms, optional leading/joining +-, and a trailing integer constant.
-  if (!/^([+-]?\d*(d\d+|d%))+([+-]\d+)?$/i.test(raw)) {
-    return { ok: false, error: "invalid" };
-  }
+/** Invalid input must remain visible instead of being silently repaired by the quick-die buttons. */
+export function compactDiceExpression(notation: string): string {
+  const normalized = normalizeDiceExpression(notation);
+  return normalized.ok ? normalized.expression : notation;
+}
 
-  const dice = expandDiceTerms(raw);
-  if (dice.length === 0) return { ok: false, error: "noDice" };
-  if (dice.length > MAX_DICE_PER_ROLL) return { ok: false, error: "tooMany" };
-
-  for (const type of dice) {
-    if (!DIE_FACES[type]) return { ok: false, error: "unsupported", detail: type };
-  }
-
-  const expression = compactDiceExpression(raw);
-  if (!expression) return { ok: false, error: "noDice" };
-  return { ok: true, expression, dice: expandDiceTerms(expression) };
+/** The vendor adds every set, ignoring its operator. Apply our validated signs to the actual rolls. */
+export function totalDiceResult(expression: ValidExpr, result: { sets?: { type?: string; total?: number }[] }): number {
+  if (result.sets?.length !== expression.groups.length) throw new Error("Invalid dice result");
+  return expression.groups.reduce((total, group, index) => {
+    const set = result.sets![index];
+    if (set.type !== group.type || !Number.isFinite(set.total)) throw new Error("Invalid dice result");
+    return total + group.sign * set.total!;
+  }, expression.modifier);
 }
 
 export function pickFairFace(type: string): number {

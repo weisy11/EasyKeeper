@@ -7,6 +7,7 @@ export type ProviderView = {
   address: string;
   hasKey: boolean;
   models: string[];
+  availableModels?: string[];
   proxyId: string;
 };
 
@@ -18,6 +19,7 @@ export type ProviderInput = {
   address: string;
   apiKey?: string;
   models: string[];
+  availableModels: string[];
   proxyId?: string;
 };
 

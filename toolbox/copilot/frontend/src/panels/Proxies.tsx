@@ -169,7 +169,7 @@ export function ProxyDialog({ proxies, onClose, onSaved }: { proxies: ProxyView[
         ) : null}
         {error ? <p className="mt-2 text-destructive">{error}</p> : null}
         <div className="mt-3 flex items-center justify-end gap-2">
-          <button type="button" className={button} disabled={saving} onClick={() => void commit(false)}>
+          <button type="button" data-ek-save className={button} disabled={saving} onClick={() => void commit(false)}>
             {t("apply")}
           </button>
           <button type="button" className={button} onClick={onClose}>

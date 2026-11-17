@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { DicesIcon, Loader2Icon } from "lucide-react";
+import { DicesIcon, Loader2Icon, Volume2, VolumeX } from "lucide-react";
 import type { ToolPanelProps } from "@ek/tool-api";
 import {
   buildCocThrowNotation,
@@ -10,7 +10,7 @@ import {
   type DicePanelMode,
   type EngineRollResult,
 } from "../cocD100";
-import { compactDiceExpression, normalizeDiceExpression, withFairForcedResults, type ExprErrorKind } from "../fairRoll";
+import { compactDiceExpression, normalizeDiceExpression, totalDiceResult, withFairForcedResults, type ExprErrorKind } from "../fairRoll";
 import { diceT, readDiceLocale, type DiceLocale } from "../i18n";
 import { registerDiceBox, unregisterDiceBox } from "../runtime";
 
@@ -18,6 +18,14 @@ const QUICK = ["d4", "d6", "d8", "d10", "d12", "d20", "d100"] as const;
 const COC_BP_MAX = 5;
 const ROLL_TIMEOUT_MS = 20_000;
 const DEFAULT_EXPR = "2d6+1d20";
+const MUTE_KEY = "ek.dice.muted";
+
+function loadMuted() {
+  const fromHost = document.documentElement.dataset.diceMuted;
+  if (fromHost !== undefined) return fromHost === "true";
+  try { return localStorage.getItem(MUTE_KEY) === "true"; }
+  catch { return false; }
+}
 
 /** Major’s fixed logical desk. DOM/canvas can be any size; physics stays 500×300. */
 const LOGICAL_WORLD = { x: 500, y: 300 } as const;
@@ -33,6 +41,10 @@ type DiceBoxInstance = {
   destroy?: () => void;
   rolling?: boolean;
   running?: boolean;
+  sounds?: boolean;
+  volume?: number;
+  sounds_table?: Record<string, HTMLAudioElement[]>;
+  sounds_dice?: Record<string, HTMLAudioElement[]>;
   threadid?: number;
   renderer?: {
     dispose?: () => void;
@@ -155,6 +167,9 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
   const pendingResizeRef = useRef(false);
   const locale = useDiceLocale();
   const [mode, setMode] = useState<DicePanelMode>(loadDiceMode);
+  const [muted, setMuted] = useState(loadMuted);
+  const mutedRef = useRef(muted);
+  mutedRef.current = muted;
   const [expr, setExpr] = useState(DEFAULT_EXPR);
   /** CoC: >0 bonus dice, <0 penalty dice, 0 none. Never both at once. */
   const [cocBp, setCocBp] = useState(0);
@@ -170,6 +185,24 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
   useEffect(() => {
     saveDiceMode(mode);
   }, [mode]);
+
+  useEffect(() => {
+    try { localStorage.setItem(MUTE_KEY, String(muted)); } catch { /* ignore */ }
+    document.dispatchEvent(new CustomEvent("ek:dice-muted-change", { detail: muted }));
+    const box = boxRef.current;
+    if (!box) return;
+    box.sounds = !muted;
+    box.volume = muted ? 0 : 80;
+    if (muted) {
+      for (const sound of [...Object.values(box.sounds_table ?? {}).flat(), ...Object.values(box.sounds_dice ?? {}).flat()]) sound?.pause();
+    }
+  }, [muted]);
+
+  useEffect(() => {
+    const observer = new MutationObserver(() => setMuted(loadMuted()));
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-dice-muted"] });
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     busyRef.current = busy;
@@ -249,6 +282,8 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
           return;
         }
         boxRef.current = box;
+        box.sounds = !mutedRef.current;
+        box.volume = mutedRef.current ? 0 : 80;
         registerDiceBox(box);
         installPhysicsTweaks(box);
         setReady(true);
@@ -325,7 +360,7 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
         box.rolling = false;
       })) as EngineRollResult;
       const full = box.getDiceResults?.() ?? result;
-      if (typeof full.total === "number") setLast({ label: normalized.expression, total: full.total });
+      setLast({ label: normalized.expression, total: totalDiceResult(normalized, full) });
     } catch (e) {
       setError(e instanceof Error && e.message === "timeout" ? diceT(locale, "rollFailed") : e instanceof Error ? e.message : diceT(locale, "rollFailed"));
     } finally {
@@ -408,7 +443,7 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
             if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setHudHot(false);
           }}
         >
-          <div className="flex justify-center">
+          <div className="flex items-center justify-center gap-2">
             <div className="inline-flex rounded-full border border-white/25 bg-black/55 p-1 shadow-md backdrop-blur-md">
               <button
                 type="button"
@@ -427,6 +462,11 @@ export function DiceRollerPanel(_props: ToolPanelProps) {
                 {diceT(locale, "modeCoc")}
               </button>
             </div>
+            <button type="button" aria-pressed={muted} title={diceT(locale, muted ? "unmute" : "mute")} aria-label={diceT(locale, muted ? "unmute" : "mute")}
+              className="grid size-11 shrink-0 place-items-center rounded-full border border-white/25 bg-black/55 text-white/80 hover:text-white"
+              onClick={() => setMuted((current) => !current)}>
+              {muted ? <VolumeX className="size-5" /> : <Volume2 className="size-5" />}
+            </button>
           </div>
 
           <form className="flex w-full flex-col gap-2" onSubmit={onSubmit}>

@@ -7,6 +7,8 @@ const strings = {
   modeCoc: { zh: "CoC 1d100", en: "CoC 1d100" },
   roll: { zh: "掷骰子", en: "Roll" },
   clear: { zh: "清空", en: "Clear" },
+  mute: { zh: "静音", en: "Mute" },
+  unmute: { zh: "取消静音", en: "Unmute" },
   exprPlaceholder: { zh: "2d6+1d20", en: "2d6+1d20" },
   loading: { zh: "正在加载 3D 骰子…", en: "Loading 3D dice…" },
   rolling: { zh: "掷骰中…", en: "Rolling…" },

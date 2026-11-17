@@ -154,7 +154,7 @@ export function PromptTemplateDialog({
           className={`mt-3 min-h-0 w-full flex-1 resize-none rounded-md border border-border p-2.5 text-base leading-[24px] outline-none ${current?.locked ? "bg-muted text-foreground" : "bg-background"}`}
         />
         <div className="mt-3 flex justify-end gap-2">
-          <button type="button" className={button} onClick={() => onApply(clonePromptLibrary(draft))}>{t("apply")}</button>
+          <button type="button" data-ek-save className={button} onClick={() => onApply(clonePromptLibrary(draft))}>{t("apply")}</button>
           <button type="button" className={button} onClick={onClose}>{t("cancel")}</button>
           <button type="button" className="h-8 shrink-0 rounded-md border border-foreground bg-foreground px-3 text-background" onClick={() => onConfirm(clonePromptLibrary(draft))}>{t("ok")}</button>
         </div>

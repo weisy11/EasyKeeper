@@ -6,7 +6,7 @@ import { loadProviders, loadProxies, type ProviderView, type ProxyView } from ".
 import { ProxyDialog } from "./Proxies";
 import { ServiceForm, ServiceList } from "./Providers";
 
-export function CopilotEditorDialog({ onClose }: { onClose: () => void }) {
+export function CopilotEditorDialog({ onClose, standalone = false }: { onClose: () => void; standalone?: boolean }) {
   const locale = useCopilotLocale();
   const t = (key: CopilotStringKey) => copilotT(locale, key);
   const [providers, setProviders] = useState<ProviderView[]>([]);
@@ -39,11 +39,11 @@ export function CopilotEditorDialog({ onClose }: { onClose: () => void }) {
     );
 
   return createPortal(
-    <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-6">
+    <div className={standalone ? "fixed inset-0 overflow-auto bg-background p-4" : "fixed inset-0 z-40 grid place-items-center bg-black/30 p-6"}>
       <div
         role="dialog"
         aria-label={title}
-        className="max-h-full w-[min(440px,100%)] overflow-auto rounded-md border border-border bg-background p-4 text-sm text-foreground shadow-lg"
+        className={standalone ? "mx-auto max-w-lg text-sm text-foreground" : "max-h-full w-[min(440px,100%)] overflow-auto rounded-md border border-border bg-background p-4 text-sm text-foreground shadow-lg"}
         onPointerDown={(event) => event.stopPropagation()}
       >
         <div className="mb-3 flex items-center justify-between gap-2">

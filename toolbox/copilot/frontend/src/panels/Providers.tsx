@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { copilotT, type CopilotLocale, type CopilotStringKey } from "../i18n";
 import { deleteProvider, failureParts, listModels, saveProvider, type ProviderView, type ProxyView } from "../store";
 import { FORMATS, VENDORS, addressFor, isFormat, isVendor } from "../vendors";
@@ -138,14 +138,17 @@ export function ServiceForm({
   const [address, setAddress] = useState(provider?.address ?? addressFor("gemini", "chat"));
   const [apiKey, setApiKey] = useState(provider?.hasKey ? savedKeyMask : "");
   const [proxyId, setProxyId] = useState(provider?.proxyId ?? "");
-  const [catalog, setCatalog] = useState(provider?.models ?? []);
+  const [catalog, setCatalog] = useState(provider?.availableModels ?? provider?.models ?? []);
   const [enabled, setEnabled] = useState(() => new Set(provider?.models ?? []));
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [confirmEmpty, setConfirmEmpty] = useState(false);
+  const refreshId = useRef(0);
 
   async function refresh() {
+    const id = ++refreshId.current;
     setRefreshing(true);
     setNotice("");
     setError("");
@@ -158,21 +161,22 @@ export function ServiceForm({
         address,
         proxyId,
       });
-      setCatalog(ids);
-      setEnabled((current) => new Set(ids.filter((id) => current.has(id))));
+      if (id !== refreshId.current) return;
+      // A refresh is discovery, not an instruction to discard the user's existing selections.
+      setCatalog((current) => [...new Set([...current, ...ids])]);
     } catch (err) {
-      setCatalog([]);
-      setEnabled(new Set());
+      if (id !== refreshId.current) return;
       const { code, detail } = failureParts(err);
       if (code.includes("no-key")) setError(t("noKey"));
       else setError(detail ? `${t("listFailed")} ${code}: ${detail}` : t("listFailed"));
     } finally {
-      setRefreshing(false);
+      if (id === refreshId.current) setRefreshing(false);
     }
   }
 
   useEffect(() => {
     if (provider?.hasKey) void refresh();
+    return () => { refreshId.current += 1; };
     // Load once when this provider form opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -197,12 +201,20 @@ export function ServiceForm({
     setAddress(addressFor(vendor, next));
   }
 
-  async function save() {
+  async function save(allowEmpty = false) {
     const trimmed = name.trim();
     if (!trimmed) {
       setError(t("emptyName"));
       return;
     }
+    setError("");
+    if (!allowEmpty && !catalog.some((id) => enabled.has(id))) {
+      setConfirmEmpty(true);
+      return;
+    }
+    setConfirmEmpty(false);
+    refreshId.current += 1;
+    setRefreshing(false);
     setSaving(true);
     setError("");
     try {
@@ -214,6 +226,7 @@ export function ServiceForm({
         address,
         apiKey: typedKey(apiKey),
         models: catalog.filter((id) => enabled.has(id)),
+        availableModels: catalog,
         proxyId,
       });
       setPreviousName(trimmed);
@@ -321,10 +334,22 @@ export function ServiceForm({
           <button type="button" className={button} onClick={onBack}>
             {t("cancel")}
           </button>
-          <button type="button" className="h-8 rounded-md border border-foreground bg-foreground px-3 text-background disabled:opacity-40" disabled={saving} onClick={() => void save()}>
+          <button type="button" className="h-8 rounded-md border border-foreground bg-foreground px-3 text-background disabled:opacity-40" data-ek-save disabled={saving || refreshing} onClick={() => void save()}>
             {t("ok")}
           </button>
         </div>
+        {confirmEmpty && (
+          <div className="fixed inset-0 z-[60] grid place-items-center bg-black/30 p-6">
+            <div role="alertdialog" aria-modal="true" aria-labelledby="empty-model-title" aria-describedby="empty-model-hint" className="w-full max-w-sm rounded-md border border-border bg-background p-4 shadow-lg">
+              <h2 id="empty-model-title" className="font-semibold">{t("noModelsSelected")}</h2>
+              <p id="empty-model-hint" className="mt-2">{t("saveWithoutModelsHint")}</p>
+              <div className="mt-4 flex justify-end gap-2">
+                <button type="button" autoFocus className={button} onClick={() => setConfirmEmpty(false)}>{t("cancel")}</button>
+                <button type="button" data-ek-save className={button} onClick={() => void save(true)}>{t("save")}</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

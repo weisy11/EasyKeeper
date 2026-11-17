@@ -34,6 +34,7 @@ pub(crate) const SCHEMA: &[&str] = &[
         nonce TEXT NOT NULL,
         secret TEXT NOT NULL,
         models TEXT NOT NULL,
+        available_models TEXT NOT NULL DEFAULT '[]',
         proxy_id TEXT NOT NULL DEFAULT ''
     )",
     "CREATE TABLE IF NOT EXISTS copilot_proxy (
@@ -107,8 +108,26 @@ fn open(dir: &Path) -> Result<Connection, String> {
     for sql in SCHEMA {
         conn.execute_batch(sql).map_err(|err| err.to_string())?;
     }
+    migrate_provider_catalog(&conn)?;
     import_legacy_state(&conn, dir)?;
     Ok(conn)
+}
+
+fn migrate_provider_catalog(conn: &Connection) -> Result<(), String> {
+    let has_catalog = conn.prepare("PRAGMA table_info(copilot_provider)")
+        .map_err(|err| err.to_string())?
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| err.to_string())?
+        .collect::<Result<Vec<_>, _>>().map_err(|err| err.to_string())?
+        .iter().any(|name| name == "available_models");
+    if !has_catalog {
+        let tx = conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        tx.execute_batch("ALTER TABLE copilot_provider ADD COLUMN available_models TEXT NOT NULL DEFAULT '[]';
+                          UPDATE copilot_provider SET available_models = models;")
+            .map_err(|err| err.to_string())?;
+        tx.commit().map_err(|err| err.to_string())?;
+    }
+    Ok(())
 }
 
 /// Run `work` against the shared connection, opening it on first use.
@@ -242,6 +261,20 @@ mod tests {
         let again = open(&dir).unwrap();
         assert_eq!(kv_get(&again, "ek.settings").unwrap().as_deref(), Some("{}"));
         let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn old_provider_schema_preserves_selected_models_as_catalog() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE copilot_provider (name TEXT, models TEXT NOT NULL);
+                            INSERT INTO copilot_provider VALUES ('existing', '[\"model-a\"]');").unwrap();
+        migrate_provider_catalog(&conn).unwrap();
+        migrate_provider_catalog(&conn).unwrap();
+        let (models, catalog): (String, String) = conn.query_row(
+            "SELECT models, available_models FROM copilot_provider", [], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(models, "[\"model-a\"]");
+        assert_eq!(models, catalog);
     }
 
     #[test]

@@ -29,6 +29,8 @@ pub struct ProviderView {
     pub has_key: bool,
     pub models: Vec<String>,
     #[serde(default)]
+    pub available_models: Vec<String>,
+    #[serde(default)]
     pub proxy_id: String,
 }
 
@@ -43,6 +45,8 @@ pub struct ProviderInput {
     pub api_key: Option<String>,
     pub models: Vec<String>,
     #[serde(default)]
+    pub available_models: Vec<String>,
+    #[serde(default)]
     pub proxy_id: String,
 }
 
@@ -55,6 +59,8 @@ struct StoredProvider {
     nonce: String,
     secret: String,
     models: Vec<String>,
+    #[serde(default)]
+    available_models: Vec<String>,
     #[serde(default)]
     proxy_id: String,
 }
@@ -116,6 +122,7 @@ struct LiveProvider {
     address: String,
     api_key: String,
     models: Vec<String>,
+    available_models: Vec<String>,
     proxy_id: String,
 }
 
@@ -174,7 +181,7 @@ fn read_body(conn: &Connection) -> Result<Option<FileBody>, String> {
     let mut providers = Vec::new();
     {
         let mut statement = conn
-            .prepare("SELECT name, vendor, format, address, nonce, secret, models, proxy_id FROM copilot_provider ORDER BY position")
+            .prepare("SELECT name, vendor, format, address, nonce, secret, models, proxy_id, available_models FROM copilot_provider ORDER BY position")
             .map_err(|err| err.to_string())?;
         let rows = statement
             .query_map([], |row| {
@@ -188,6 +195,7 @@ fn read_body(conn: &Connection) -> Result<Option<FileBody>, String> {
                     secret: row.get(5)?,
                     models: serde_json::from_str(&models).unwrap_or_default(),
                     proxy_id: row.get(7)?,
+                    available_models: serde_json::from_str(&row.get::<_, String>(8)?).unwrap_or_default(),
                 })
             })
             .map_err(|err| err.to_string())?;
@@ -231,9 +239,10 @@ fn write_body(conn: &Connection, body: &FileBody) -> Result<(), String> {
     tx.execute("DELETE FROM copilot_provider", []).map_err(|err| err.to_string())?;
     for (position, provider) in body.providers.iter().enumerate() {
         let models = serde_json::to_string(&provider.models).map_err(|err| err.to_string())?;
+        let available_models = serde_json::to_string(&provider.available_models).map_err(|err| err.to_string())?;
         tx.execute(
-            "INSERT INTO copilot_provider (name, position, vendor, format, address, nonce, secret, models, proxy_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO copilot_provider (name, position, vendor, format, address, nonce, secret, models, proxy_id, available_models)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 provider.name,
                 position as i64,
@@ -243,7 +252,8 @@ fn write_body(conn: &Connection, body: &FileBody) -> Result<(), String> {
                 provider.nonce,
                 provider.secret,
                 models,
-                provider.proxy_id
+                provider.proxy_id,
+                available_models
             ],
         )
         .map_err(|err| err.to_string())?;
@@ -309,6 +319,7 @@ fn load_memory(app: &AppHandle) -> Result<(), String> {
             format: stored.format,
             address: stored.address,
             api_key,
+            available_models: if stored.available_models.is_empty() { stored.models.clone() } else { stored.available_models },
             models: stored.models,
             proxy_id: stored.proxy_id,
         });
@@ -349,6 +360,9 @@ fn views(memory: &Memory) -> Vec<ProviderView> {
             format: provider.format.clone(),
             address: provider.address.clone(),
             has_key: !provider.api_key.is_empty(),
+            available_models: provider.available_models.iter()
+                .map(|model| crate::copilot_http::bare_model_id(&provider.vendor, model).to_string())
+                .collect(),
             models: {
                 let mut ids = Vec::new();
                 for model in &provider.models {
@@ -384,6 +398,7 @@ fn persist(app: &AppHandle, memory: &Memory) -> Result<(), String> {
                 nonce,
                 secret,
                 models: provider.models.clone(),
+                available_models: provider.available_models.clone(),
                 proxy_id: provider.proxy_id.clone(),
             })
         })
@@ -756,6 +771,8 @@ pub fn copilot_save_provider(
         format: input.format,
         address: input.address.trim().to_string(),
         api_key,
+        available_models: input.available_models.into_iter().chain(input.models.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>().into_iter().collect(),
         models: input.models,
         proxy_id: input.proxy_id.trim().to_string(),
     };
@@ -965,6 +982,7 @@ mod tests {
                     nonce,
                     secret,
                     models: vec!["gpt-4o".into(), "o3".into()],
+                    available_models: vec!["gpt-4o".into(), "o3".into(), "unselected".into()],
                     proxy_id: "px".into(),
                 }],
                 proxies: vec![StoredProxy {
@@ -991,13 +1009,23 @@ mod tests {
         assert_eq!(body.providers.len(), 1);
         assert_eq!(body.providers[0].models, vec!["gpt-4o".to_string(), "o3".to_string()]);
         assert_eq!(body.providers[0].proxy_id, "px");
+        assert_eq!(body.providers[0].available_models.len(), 3);
         assert_eq!(open(&key, &body.providers[0].nonce, &body.providers[0].secret).unwrap(), "sk-test");
         assert_eq!(body.proxies.len(), 1);
         assert_eq!(body.proxies[0].port, 7897);
         assert!(open(&key, &body.proxies[0].auth_nonce, &body.proxies[0].auth_secret).unwrap().contains("\"username\":\"u\""));
 
-        // A second write replaces the lists instead of appending.
+        // Deselecting every model retains the catalog and connection information after reopening.
         let mut next = body;
+        next.providers[0].models.clear();
+        write_body(&conn, &next).unwrap();
+        let reopened = read_body(&conn).unwrap().unwrap();
+        assert!(reopened.providers[0].models.is_empty());
+        assert_eq!(reopened.providers[0].available_models.len(), 3);
+        assert_eq!(reopened.providers[0].address, "https://api.openai.com");
+        assert_eq!(open(&key, &reopened.providers[0].nonce, &reopened.providers[0].secret).unwrap(), "sk-test");
+
+        // A second write replaces the lists instead of appending.
         next.providers.clear();
         write_body(&conn, &next).unwrap();
         assert!(read_body(&conn).unwrap().unwrap().providers.is_empty());

@@ -81,6 +81,8 @@ const strings = {
   duplicateName: { zh: "名称不能重复。", en: "That name is already used." },
   saveFailed: { zh: "没有保存成功。", en: "Could not save." },
   noModels: { zh: "还没有启用的模型", en: "No enabled models" },
+  noModelsSelected: { zh: "尚未选择模型", en: "No models selected" },
+  saveWithoutModelsHint: { zh: "仍要保存这份配置吗？连接信息和模型列表会保留，但此服务暂时不会出现在可用模型列表中。", en: "Save this configuration anyway? Connection settings and the model catalog will be kept, but this service will not appear in the model picker yet." },
   vendorGemini: { zh: "Gemini", en: "Gemini" },
   vendorDeepseek: { zh: "DeepSeek", en: "DeepSeek" },
   vendorMinimaxCn: { zh: "minimax", en: "minimax(cn)" },

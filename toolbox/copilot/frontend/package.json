@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./settings": "./src/panels/Editor.tsx",
+    "./markdown": "./src/panels/Markdown.tsx"
   },
   "dependencies": {
     "@ek/tool-api": "workspace:*",
