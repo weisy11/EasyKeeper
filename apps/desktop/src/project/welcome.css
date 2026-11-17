@@ -31,8 +31,7 @@
   padding-bottom: 28px;
 }
 
-.ek-welcome .page.sub > form,
-.ek-welcome .picker {
+.ek-welcome .page.sub > form {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -263,59 +262,6 @@
   border-radius: 2px;
   background: var(--background);
   color: var(--foreground);
-  padding: 0;
-}
-
-.ek-welcome .list {
-  margin-top: 16px;
-  border: 1px solid var(--border);
-  background: var(--card);
-  border-radius: 2px;
-  min-height: 40px;
-}
-
-.ek-welcome .row {
-  width: 100%;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 8px 0 12px;
-  border: 0;
-  background: transparent;
-  color: var(--foreground);
-  font-size: 14px;
-  text-align: left;
-}
-
-.ek-welcome .row + .row {
-  border-top: 1px solid var(--border);
-}
-
-.ek-welcome .row.sel {
-  background: color-mix(in oklch, #2563eb 20%, transparent);
-}
-
-.dark .ek-welcome .row.sel {
-  background: color-mix(in oklch, #60a5fa 25%, transparent);
-}
-
-.ek-welcome .row .grow {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ek-welcome .enter {
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  background: transparent;
-  color: var(--muted-foreground);
   padding: 0;
 }
 

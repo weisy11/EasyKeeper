@@ -2,6 +2,7 @@ import { serial } from "@ek/tool-api";
 import { invoke } from "@tauri-apps/api/core";
 import { isTauri } from "@/lib/platform";
 import type { ProjectKind } from "./types";
+import { parseManifest, serializeManifest } from "./manifest";
 
 const SCENARIO_MARKER = "scenario.ezkp";
 const RECORD_MARKER = "record.ezkp";
@@ -78,9 +79,15 @@ export async function ensureDir(path: string) {
 }
 
 /** Next free `scenario1` / `record1` name in `parent`. Does not create the directory. */
+const pendingDirectoryListings = new Map<string, Promise<string[]>>();
 export async function nextNumberedName(parent: string, prefix: "scenario" | "record"): Promise<string> {
   // One directory listing instead of one existence check per candidate. A missing parent has no children yet.
-  const names = await listChildDirs(parent).catch(() => [] as string[]);
+  let pending = pendingDirectoryListings.get(parent);
+  if (!pending) {
+    pending = listChildDirs(parent).catch(() => [] as string[]).finally(() => pendingDirectoryListings.delete(parent));
+    pendingDirectoryListings.set(parent, pending);
+  }
+  const names = await pending;
   const taken = new Set(names.map((name) => name.toLowerCase()));
   for (let n = 1; n < 10000; n += 1) {
     const name = `${prefix}${n}`;
@@ -105,10 +112,31 @@ async function writeText(path: string, contents: string) {
   saveBrowserFs(fs);
 }
 
-export async function pickParentDirectory(defaultPath?: string): Promise<string | null> {
+async function readText(path: string): Promise<string> {
+  if (isTauri) return invoke<string>("read_text_file", { path });
+  const contents = browserFs().files[path];
+  if (contents === undefined) throw new ProjectError("io");
+  return contents;
+}
+
+/** Keep this association with the record, independently of the app's recent-project list. */
+export async function saveRecordModule(path: string, modulePath: string | null) {
+  await writeText(await joinPath(path, RECORD_MARKER), serializeManifest({
+    kind: "gameRecord", name: splitProjectPath(path)?.name ?? "record", version: 1, modulePath,
+  }));
+}
+
+/** null means a legacy/invalid marker; { modulePath: null } means an explicitly unlinked record. */
+export async function readRecordModule(path: string): Promise<{ modulePath: string | null } | null> {
+  const text = await readText(await joinPath(path, RECORD_MARKER));
+  const manifest = parseManifest(text);
+  return manifest?.kind === "gameRecord" ? { modulePath: manifest.modulePath } : null;
+}
+
+export async function pickParentDirectory(defaultPath?: string, title?: string): Promise<string | null> {
   if (!isTauri) return null;
   const { open } = await import("@tauri-apps/plugin-dialog");
-  const picked = await open({ directory: true, multiple: false, defaultPath });
+  const picked = await open({ directory: true, multiple: false, defaultPath, title });
   if (!picked || Array.isArray(picked)) return null;
   return picked;
 }
@@ -127,11 +155,12 @@ export async function listChildDirs(path: string): Promise<string[]> {
   return [...names].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 }
 
-/** Marker file only. Contents are intentionally empty until the file format is decided. */
+/** Scenario markers remain empty; record markers also carry the scenario association. */
 export async function createProject(opts: {
   name: string;
   parent: string;
   kind: ProjectKind;
+  modulePath?: string | null;
   /** Create `parent` first. Used only for the default EasyKeeper library. */
   createParent: boolean;
 }): Promise<{ path: string; name: string }> {
@@ -143,7 +172,8 @@ export async function createProject(opts: {
   if (await pathExists(path)) throw new ProjectError("exists");
   await ensureDir(path);
   const marker = opts.kind === "scenario" ? SCENARIO_MARKER : RECORD_MARKER;
-  await writeText(await joinPath(path, marker), "");
+  if (opts.kind === "gameRecord") await saveRecordModule(path, opts.modulePath ?? null);
+  else await writeText(await joinPath(path, marker), "");
   return { path, name };
 }
 

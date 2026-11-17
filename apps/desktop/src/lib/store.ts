@@ -47,9 +47,12 @@ export function useStoreSelector<T, R>(store: Store<T>, select: (value: T) => R)
 export type Locale = "zh" | "en";
 export type Theme = "dark" | "light";
 
-export type GlobalSettings = { locale: Locale; fontScale: number; theme: Theme };
+export type GlobalSettings = { locale: Locale; fontScale: number; theme: Theme; diceMuted: boolean };
 
-export const settingsStore = createStore<GlobalSettings>({ locale: "zh", fontScale: 1, theme: "dark" }, "ek.settings");
+function legacyDiceMuted() {
+  try { return localStorage.getItem("ek.dice.muted") === "true"; } catch { return false; }
+}
+export const settingsStore = createStore<GlobalSettings>({ locale: "zh", fontScale: 1, theme: "dark", diceMuted: legacyDiceMuted() }, "ek.settings");
 
 export type ToolState = { enabled: boolean; installed: boolean };
 export const toolStateStore = createStore<Record<string, ToolState>>({}, "ek.toolState");

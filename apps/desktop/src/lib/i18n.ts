@@ -1,8 +1,8 @@
 import { settingsStore, useStore, type Locale } from "./store";
 
 const dict = {
-  "app.title.prep": { zh: "EasyKeeper 备团模式", en: "EasyKeeper Prep" },
-  "app.title.play": { zh: "EasyKeeper 跑团模式", en: "EasyKeeper Play" },
+  "app.mode.prep": { zh: "备团", en: "Prep" },
+  "app.mode.play": { zh: "跑团", en: "Play" },
   "ws.new": { zh: "新建工作区", en: "New workspace" },
   "ws.dup": { zh: "复制当前工作区", en: "Duplicate workspace" },
   "ws.rename": { zh: "重命名", en: "Rename" },
@@ -83,6 +83,7 @@ const dict = {
   "popout.blocked": { zh: "弹出窗口被拦截", en: "Pop-out blocked" },
   "popout.opening": { zh: "正在弹出窗口…", en: "Opening pop-out…" },
   "welcome.start": { zh: "开始", en: "Start" },
+  "welcome.backToProject": { zh: "返回当前项目", en: "Back to current project" },
   "welcome.editScenario": { zh: "编辑模组", en: "Edit a scenario" },
   "welcome.continueGame": { zh: "继续跑团", en: "Continue a game" },
   "welcome.createScenario": { zh: "创建模组", en: "Create a scenario" },
@@ -94,6 +95,9 @@ const dict = {
   "welcome.justRunHint": { zh: "不用模组，直接开跑", en: "No scenario, just run a game" },
   "welcome.continueGameHint": { zh: "继续创造你的冒险故事", en: "Continue creating your adventure story" },
   "welcome.selectScenario": { zh: "选择模组", en: "Select a scenario" },
+  "welcome.moduleMissing": { zh: "找不到关联的模组", en: "Linked scenario not found" },
+  "welcome.moduleMissingHint": { zh: "请选择模组现在所在的文件夹。如果暂时找不到，可以仅打开跑团记录，模组内容将留空。", en: "Select the scenario's current folder. If you cannot find it, open the game record on its own; the scenario content will be empty." },
+  "welcome.openRecordOnly": { zh: "仅打开记录", en: "Open record only" },
   "welcome.newRecord": { zh: "新建跑团记录", en: "New game record" },
   "welcome.selectRecord": { zh: "选择跑团记录", en: "Select a game record" },
   "welcome.name": { zh: "名称", en: "Name" },
@@ -105,6 +109,7 @@ const dict = {
   "welcome.next": { zh: "下一步", en: "Next" },
   "welcome.up": { zh: "上一级", en: "Up" },
   "welcome.browse": { zh: "选择文件夹", en: "Choose folder" },
+  "welcome.browserDirectoryHint": { zh: "浏览器预览中，请填写项目文件夹路径。", en: "In browser preview, enter the project folder path." },
   "welcome.enter": { zh: "进入", en: "Enter" },
   "welcome.removeRecent": { zh: "移除", en: "Remove" },
   "welcome.error.exists": { zh: "目录已存在", en: "The folder already exists." },

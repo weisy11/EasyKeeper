@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { settingsStore, useStore } from "@/lib/store";
 import { useT } from "@/lib/i18n";
 import { isTauri } from "@/lib/platform";
@@ -8,9 +8,10 @@ import {
   createProject,
   documentsDir,
   joinPath,
-  listChildDirs,
   nextNumberedName,
   openProject,
+  readRecordModule,
+  saveRecordModule,
   pathExists,
   pickParentDirectory,
   samePath,
@@ -22,18 +23,19 @@ import { rememberSession } from "./launchSession";
 import { forgetProject, migrateLegacyRecent, rememberProject, recentStore } from "./recent";
 import { sessionStore } from "./sessionStore";
 import type { ProjectKind, RecentProject } from "./types";
+import { resolveRecordModule } from "./recordModule";
+import { closeOpenProject } from "./closeProject";
+import { projectActionStore } from "../shell/projectActions";
 
 type Roots = { docs: string; library: string; home: string | null };
 
 type View =
   | { name: "home" }
   | { name: "create-scenario" }
-  | { name: "edit-scenario" }
-  | { name: "pick-scenario" }
-  | { name: "create-record"; back: "home" | "pick-scenario"; modulePath: string | null }
-  | { name: "pick-record" };
+  | { name: "create-record"; modulePath: string | null };
 
-function enterProject(path: string, name: string, kind: ProjectKind, modulePath: string | null) {
+async function enterProject(path: string, name: string, kind: ProjectKind, modulePath: string | null) {
+  if (sessionStore.get()) await closeOpenProject();
   const session = {
     mode: kind === "scenario" ? "prep" : "play",
     projectPath: path,
@@ -45,6 +47,7 @@ function enterProject(path: string, name: string, kind: ProjectKind, modulePath:
   sessionStore.set(session);
   void rememberSession(session);
   rememberProject({ path, name, kind, modulePath });
+  projectActionStore.set(null);
 }
 
 function displayPath(path: string, home: string | null) {
@@ -86,14 +89,6 @@ function FolderGlyph() {
   );
 }
 
-function Chevron() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-      <path d="m9 6 6 6-6 6" />
-    </svg>
-  );
-}
-
 const PLUS = "M12 5v14M5 12h14";
 const PENCIL = "M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z";
 const BOOK = "M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z";
@@ -103,21 +98,45 @@ export function WelcomePage() {
   const tr = useT();
   const { locale } = useStore(settingsStore);
   const recent = useStore(recentStore);
+  const menuAction = useStore(projectActionStore);
   const [roots, setRoots] = useState<Roots | null>(null);
   const [rootsError, setRootsError] = useState<string | null>(null);
   const [view, setView] = useState<View>({ name: "home" });
   const [projectName, setProjectName] = useState("");
   const [parent, setParent] = useState("");
-  const [dir, setDir] = useState("");
-  const [kids, setKids] = useState<string[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [homeError, setHomeError] = useState<{ kind: ProjectKind; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [directoryPrompt, setDirectoryPrompt] = useState<{ title: string; value: string } | null>(null);
+  const directoryResolver = useRef<((path: string | null) => void) | null>(null);
+  const [missingModule, setMissingModule] = useState<{ path: string | null; error: string | null; choosing: boolean } | null>(null);
+  const moduleResolver = useRef<((path: string | null) => void) | null>(null);
+  const creationRequest = useRef(0);
+  const creationEdited = useRef(false);
+
+  useEffect(() => () => {
+    directoryResolver.current?.(null);
+    directoryResolver.current = null;
+    moduleResolver.current?.(null);
+    moduleResolver.current = null;
+    creationRequest.current += 1;
+  }, []);
 
   useEffect(() => {
     void migrateLegacyRecent();
   }, []);
+
+  useEffect(() => {
+    if (!roots || !menuAction || menuAction.started) return;
+    projectActionStore.set({ ...menuAction, started: true });
+    if (menuAction.id === "create-scenario") void startCreate("scenario", null);
+    else if (menuAction.id === "create-record") void startPicker("pick-scenario");
+    else if (menuAction.id === "open-scenario") void startPicker("edit-scenario");
+    else if (menuAction.id === "open-record") void startPicker("pick-record");
+    else if (menuAction.path && menuAction.kind) void acceptFolder(menuAction.path, menuAction.kind, true);
+    // The native menu supplies one action; editing the resulting form must not restart it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roots, menuAction]);
 
   useEffect(() => {
     let cancelled = false;
@@ -144,23 +163,6 @@ export function WelcomePage() {
     };
   }, []);
 
-  const picking = view.name === "edit-scenario" || view.name === "pick-scenario" || view.name === "pick-record";
-
-  useEffect(() => {
-    if (!picking || !dir) return;
-    let cancelled = false;
-    listChildDirs(dir)
-      .then((names) => {
-        if (!cancelled) setKids(names);
-      })
-      .catch(() => {
-        if (!cancelled) setKids([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [picking, dir]);
-
   function message(caught: unknown, expected: ProjectKind) {
     if (caught instanceof ProjectError) {
       if (caught.code === "exists") return tr("welcome.error.exists");
@@ -179,55 +181,81 @@ export function WelcomePage() {
   }
 
   function goHome() {
+    creationRequest.current += 1;
+    projectActionStore.set(null);
     setError(null);
     setHomeError(null);
     setView({ name: "home" });
   }
 
-  async function startCreate(kind: "scenario" | "record", back: "home" | "pick-scenario", modulePath: string | null) {
+  async function startCreate(kind: "scenario" | "record", modulePath: string | null) {
     if (!roots) return;
+    const request = ++creationRequest.current;
+    creationEdited.current = false;
     setError(null);
+    setHomeError(null);
+    const prefix = kind === "scenario" ? "scenario" : "record";
+    setProjectName(`${prefix}1`);
+    setParent(roots.library);
+    setView(kind === "scenario" ? { name: "create-scenario" } : { name: "create-record", modulePath });
+    // Network/cloud-backed Documents folders can stall while listing. Suggestions must not block the form.
+    void nextNumberedName(roots.library, prefix).then((name) => {
+      if (creationRequest.current === request && !creationEdited.current) setProjectName(name);
+    }).catch(() => undefined);
+  }
+
+  async function chooseDirectory(current: string, title: string): Promise<string | null> {
+    if (isTauri) return pickParentDirectory(current, title);
+    return new Promise((resolve) => {
+      directoryResolver.current = resolve;
+      setDirectoryPrompt({ title, value: current });
+    });
+  }
+
+  function finishDirectoryPrompt(path: string | null) {
+    const resolve = directoryResolver.current;
+    directoryResolver.current = null;
+    setDirectoryPrompt(null);
+    resolve?.(path?.trim() || null);
+  }
+
+  async function startPicker(action: "edit-scenario" | "pick-scenario" | "pick-record") {
+    if (!roots || busy) return;
+    const expected: ProjectKind = action === "pick-record" ? "gameRecord" : "scenario";
+    setError(null);
+    setHomeError(null);
     setBusy(true);
     try {
-      const prefix = kind === "scenario" ? "scenario" : "record";
-      const name = await nextNumberedName(roots.library, prefix);
-      setProjectName(name);
-      setParent(roots.library);
-      setView(kind === "scenario" ? { name: "create-scenario" } : { name: "create-record", back, modulePath });
+      const libraryReady = await pathExists(roots.library);
+      const title = tr(expected === "scenario" ? "welcome.selectScenario" : "welcome.selectRecord");
+      const path = await chooseDirectory(libraryReady ? roots.library : roots.docs, title);
+      if (!path) { projectActionStore.set(null); return; }
+      if (action === "pick-scenario") {
+        await openProject(path, "scenario");
+        await startCreate("record", path);
+      } else {
+        await acceptFolder(path, expected);
+      }
     } catch (caught) {
-      setError(message(caught, kind === "scenario" ? "scenario" : "gameRecord"));
+      setError(message(caught, expected));
     } finally {
       setBusy(false);
     }
   }
 
-  async function startPicker(next: "edit-scenario" | "pick-scenario" | "pick-record") {
-    if (!roots) return;
-    setError(null);
-    setSelected(null);
-    setKids([]);
-    const libraryReady = await pathExists(roots.library);
-    setDir(libraryReady ? roots.library : roots.docs);
-    if (next === "edit-scenario") setView({ name: "edit-scenario" });
-    else if (next === "pick-scenario") setView({ name: "pick-scenario" });
-    else setView({ name: "pick-record" });
-  }
-
-  async function browse(target: "parent" | "dir") {
-    const current = target === "parent" ? parent : dir;
-    let picked: string | null = null;
-    if (isTauri) {
-      picked = await pickParentDirectory(current);
-    } else {
-      const typed = window.prompt(tr("welcome.browse"), current);
-      picked = typed?.trim() ? typed.trim() : null;
-    }
-    if (!picked) return;
-    setError(null);
-    if (target === "parent") setParent(picked);
-    else {
-      setDir(picked);
-      setSelected(null);
+  async function browseParent() {
+    setBusy(true);
+    try {
+      const picked = await chooseDirectory(parent, tr("welcome.browse"));
+      if (picked) {
+        creationEdited.current = true;
+        setError(null);
+        setParent(picked);
+      }
+    } catch (caught) {
+      setError(message(caught, view.name === "create-record" ? "gameRecord" : "scenario"));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -245,11 +273,12 @@ export function WelcomePage() {
         name: projectName,
         parent: parent.trim(),
         kind,
+        modulePath: view.name === "create-record" ? view.modulePath : null,
         createParent: roots != null && samePath(parent.trim(), roots.library),
       });
       const modulePath = view.name === "create-record" ? view.modulePath : null;
       if (kind === "scenario") requestPrepDefaultLayout();
-      enterProject(created.path, created.name, kind, modulePath);
+      await enterProject(created.path, created.name, kind, modulePath);
     } catch (caught) {
       setError(message(caught, kind));
     } finally {
@@ -257,44 +286,61 @@ export function WelcomePage() {
     }
   }
 
-  async function acceptFolder(path: string, expected: ProjectKind, fromHome: boolean) {
+  async function acceptFolder(path: string, expected: ProjectKind, fromRecent = false) {
     setBusy(true);
     try {
       const opened = await openProject(path, expected);
       const recentHit = recent.recentRecords.find((item) => item.path === path);
-      const modulePath = expected === "gameRecord" ? (recentHit?.modulePath ?? null) : null;
-      enterProject(path, opened.name, expected, modulePath);
+      const modulePath = expected === "gameRecord" ? await resolveRecordModule({
+        stored: await readRecordModule(path),
+        legacyPath: recentHit?.modulePath ?? null,
+        isScenario: async (candidate) => {
+          try { await openProject(candidate, "scenario"); return true; }
+          catch { return false; }
+        },
+        recover: (missingPath) => new Promise((resolve) => {
+          moduleResolver.current = resolve;
+          setMissingModule({ path: missingPath, error: null, choosing: false });
+        }),
+        save: (candidate) => saveRecordModule(path, candidate),
+      }) : null;
+      await enterProject(path, opened.name, expected, modulePath);
     } catch (caught) {
       const text = message(caught, expected);
-      if (fromHome) setHomeError({ kind: expected, text });
+      if (fromRecent) setHomeError({ kind: expected, text });
       else setError(text);
     } finally {
       setBusy(false);
     }
   }
 
-  async function openSelected() {
-    if (!selected || !dir) return;
-    const expected: ProjectKind = view.name === "pick-record" ? "gameRecord" : "scenario";
-    const path = await joinPath(dir, selected);
-    if (view.name === "pick-scenario") {
-      setBusy(true);
-      try {
-        await openProject(path, "scenario");
-        setError(null);
-        await startCreate("record", "pick-scenario", path);
-      } catch (caught) {
-        setError(message(caught, "scenario"));
-        setBusy(false);
-      }
-      return;
-    }
-    await acceptFolder(path, expected, false);
-  }
-
   async function openRecent(item: RecentProject) {
+    setError(null);
     setHomeError(null);
     await acceptFolder(item.path, item.kind, true);
+  }
+
+  function finishModuleRecovery(path: string | null) {
+    const resolve = moduleResolver.current;
+    moduleResolver.current = null;
+    setMissingModule(null);
+    resolve?.(path);
+  }
+
+  async function chooseMissingModule() {
+    if (!missingModule || missingModule.choosing) return;
+    setMissingModule({ ...missingModule, choosing: true, error: null });
+    try {
+      const picked = await chooseDirectory(roots?.library ?? "", tr("welcome.selectScenario"));
+      if (picked) {
+        await openProject(picked, "scenario");
+        finishModuleRecovery(picked);
+        return;
+      }
+      setMissingModule((current) => current && { ...current, choosing: false });
+    } catch (caught) {
+      setMissingModule((current) => current && { ...current, choosing: false, error: message(caught, "scenario") });
+    }
   }
 
   const shown = (path: string) => displayPath(path, roots?.home ?? null);
@@ -309,6 +355,7 @@ export function WelcomePage() {
       <div className={view.name === "home" ? "page" : "page sub"}>
         <div className="top">
           <h1>EasyKeeper</h1>
+          {menuAction && sessionStore.get() && view.name === "home" && <button type="button" className="lang" disabled={busy} onClick={goHome}>{tr("welcome.backToProject")}</button>}
           <button
             type="button"
             className="lang"
@@ -347,10 +394,11 @@ export function WelcomePage() {
             </div>
             <div className="actions">
               <h2>{tr("welcome.start")}</h2>
-              <Action icon={PLUS} title={tr("welcome.createScenario")} hint={tr("welcome.createScenarioHint")} testId="create-scenario" disabled={busy || !roots} onClick={() => void startCreate("scenario", "home", null)} />
+              <Action icon={PLUS} title={tr("welcome.createScenario")} hint={tr("welcome.createScenarioHint")} testId="create-scenario" disabled={busy || !roots} onClick={() => void startCreate("scenario", null)} />
               <Action icon={PENCIL} title={tr("welcome.editScenario")} hint={tr("welcome.editScenarioHint")} testId="edit-scenario" disabled={busy || !roots} onClick={() => void startPicker("edit-scenario")} />
               <Action icon={BOOK} title={tr("welcome.runWithScenario")} hint={tr("welcome.runWithScenarioHint")} testId="run-with-scenario" disabled={busy || !roots} onClick={() => void startPicker("pick-scenario")} />
               <Action icon={HISTORY} title={tr("welcome.continueGame")} hint={tr("welcome.continueGameHint")} testId="continue-game" disabled={busy || !roots} onClick={() => void startPicker("pick-record")} />
+              {error && <p className="err" role="alert" data-welcome-error>{error}</p>}
               {rootsError && <p className="err" data-welcome-error>{tr("welcome.error.generic", { message: rootsError })}</p>}
             </div>
           </div>
@@ -367,7 +415,7 @@ export function WelcomePage() {
             <h2>{tr(view.name === "create-scenario" ? "welcome.createScenario" : "welcome.newRecord")}</h2>
             <div className="field">
               <label htmlFor="project-name">{tr("welcome.name")}</label>
-              <input id="project-name" value={projectName} spellCheck={false} data-project-name onChange={(event) => setProjectName(event.target.value)} />
+              <input id="project-name" value={projectName} spellCheck={false} data-project-name onChange={(event) => { creationEdited.current = true; setProjectName(event.target.value); }} />
             </div>
             <div className="field">
               <label htmlFor="project-parent">{tr("welcome.location")}</label>
@@ -377,9 +425,9 @@ export function WelcomePage() {
                   value={shown(parent)}
                   spellCheck={false}
                   data-project-parent={parent}
-                  onChange={(event) => setParent(fromDisplay(event.target.value, roots?.home ?? null))}
+                  onChange={(event) => { creationEdited.current = true; setParent(fromDisplay(event.target.value, roots?.home ?? null)); }}
                 />
-                <button type="button" className="iconbtn" aria-label={tr("welcome.browse")} onClick={() => void browse("parent")}>
+                <button type="button" className="iconbtn" aria-label={tr("welcome.browse")} disabled={busy} onClick={() => void browseParent()}>
                   <FolderGlyph />
                 </button>
               </div>
@@ -389,7 +437,7 @@ export function WelcomePage() {
               {error && <p className="err" data-welcome-error>{error}</p>}
             </div>
             <div className="foot">
-              <button type="button" className="btn cancel" onClick={() => (view.name === "create-record" && view.back === "pick-scenario" ? void startPicker("pick-scenario") : goHome())}>
+              <button type="button" className="btn cancel" disabled={busy} onClick={goHome}>
                 {tr("welcome.cancel")}
               </button>
               <button type="submit" className="btn primary" disabled={busy}>
@@ -398,84 +446,56 @@ export function WelcomePage() {
             </div>
           </form>
         )}
-
-        {picking && (
-          <div className="picker">
-            <h2>
-              {tr(
-                view.name === "edit-scenario"
-                  ? "welcome.editScenario"
-                  : view.name === "pick-scenario"
-                    ? "welcome.selectScenario"
-                    : "welcome.selectRecord",
-              )}
-            </h2>
-            <label htmlFor="browser-dir">{tr("welcome.location")}</label>
-            <div className="loc">
-              <input id="browser-dir" value={shown(dir)} readOnly data-browser-dir />
-              <button
-                type="button"
-                className="iconbtn"
-                aria-label={tr("welcome.up")}
-                disabled={!splitProjectPath(dir)}
-                onClick={() => {
-                  const up = splitProjectPath(dir)?.parent;
-                  if (!up) return;
-                  setSelected(null);
-                  setError(null);
-                  setDir(up);
-                }}
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 19V5" />
-                  <path d="m6 11 6-6 6 6" />
-                </svg>
-              </button>
-              <button type="button" className="iconbtn" aria-label={tr("welcome.browse")} onClick={() => void browse("dir")}>
-                <FolderGlyph />
-              </button>
-            </div>
-            <div className="list" data-folder-list>
-              {kids.map((name) => (
-                <div
-                  key={name}
-                  className={name === selected ? "row sel" : "row"}
-                  data-folder={name}
-                  onClick={() => {
-                    setSelected(name);
-                    setError(null);
-                  }}
-                >
-                  <FolderGlyph />
-                  <span className="grow">{name}</span>
-                  <button
-                    type="button"
-                    className="enter"
-                    aria-label={tr("welcome.enter")}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setError(null);
-                      setSelected(null);
-                      void joinPath(dir, name).then(setDir);
-                    }}
-                  >
-                    <Chevron />
-                  </button>
-                </div>
-              ))}
-            </div>
-            {error && <p className="err" data-welcome-error>{error}</p>}
+      </div>
+      {missingModule && (
+        <div className="fixed inset-0 z-40 grid place-items-center bg-black/30 p-6">
+          <div role="dialog" aria-modal="true" aria-labelledby="missing-module-title" className="w-full max-w-lg rounded-md border border-border bg-background p-4 shadow-lg">
+            <h2 id="missing-module-title">{tr("welcome.moduleMissing")}</h2>
+            <p className="mt-2 text-sm">{tr("welcome.moduleMissingHint")}</p>
+            {missingModule.path && <p className="mt-2 break-all text-sm text-muted-foreground">{missingModule.path}</p>}
+            {missingModule.error && <p role="alert" className="err">{missingModule.error}</p>}
             <div className="foot">
-              <button type="button" className="btn cancel" onClick={goHome}>
-                {tr("welcome.cancel")}
-              </button>
-              <button type="button" className="btn primary" disabled={busy || !selected} onClick={() => void openSelected()}>
-                {tr(view.name === "pick-scenario" ? "welcome.next" : "welcome.open")}
-              </button>
+              <button type="button" className="btn cancel" disabled={missingModule.choosing} onClick={() => finishModuleRecovery(null)}>{tr("welcome.openRecordOnly")}</button>
+              <button type="button" className="btn primary" disabled={missingModule.choosing} onClick={() => void chooseMissingModule()}>{tr("welcome.selectScenario")}</button>
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
+      {directoryPrompt && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-6">
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="directory-prompt-title"
+            className="w-full max-w-lg rounded-md border border-border bg-background p-4 shadow-lg"
+            onSubmit={(event) => {
+              event.preventDefault();
+              finishDirectoryPrompt(directoryPrompt.value);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                finishDirectoryPrompt(null);
+              }
+            }}
+          >
+            <h2 id="directory-prompt-title">{directoryPrompt.title}</h2>
+            <p className="mb-3 text-sm text-muted-foreground">{tr("welcome.browserDirectoryHint")}</p>
+            <label htmlFor="directory-prompt-path">{tr("welcome.location")}</label>
+            <input
+              id="directory-prompt-path"
+              autoFocus
+              spellCheck={false}
+              value={directoryPrompt.value}
+              onChange={(event) => setDirectoryPrompt({ ...directoryPrompt, value: event.target.value })}
+            />
+            <div className="foot">
+              <button type="button" className="btn cancel" onClick={() => finishDirectoryPrompt(null)}>{tr("welcome.cancel")}</button>
+              <button type="submit" className="btn primary" disabled={!directoryPrompt.value.trim()}>{tr("welcome.open")}</button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

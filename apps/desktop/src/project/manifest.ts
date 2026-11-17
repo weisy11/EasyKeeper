@@ -17,8 +17,8 @@ export function parseManifest(text: string): EzkpManifest | null {
   if (record.kind === "scenario") {
     return { kind: "scenario", name: record.name, version: 1 };
   }
-  if (record.kind === "gameRecord" && typeof record.modulePath === "string" && record.modulePath.trim()) {
-    return { kind: "gameRecord", name: record.name, version: 1, modulePath: record.modulePath };
+  if (record.kind === "gameRecord" && (record.modulePath === null || (typeof record.modulePath === "string" && record.modulePath.trim()))) {
+    return { kind: "gameRecord", name: record.name, version: 1, modulePath: record.modulePath as string | null };
   }
   return null;
 }

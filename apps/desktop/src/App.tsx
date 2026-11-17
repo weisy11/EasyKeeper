@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { Component, useEffect, useState, type ReactNode } from "react";
 import {
   DockviewReact,
@@ -60,6 +59,8 @@ import { closeOpenProject } from "./project/closeProject";
 import { onAppClosing } from "./lib/appClose";
 import { rememberSession } from "./project/launchSession";
 import { sessionStore } from "./project/sessionStore";
+import { installMenuBridge } from "./shell/menuBridge";
+import { projectActionStore } from "./shell/projectActions";
 
 const kw = (...keys: I18nKey[]) => keys.flatMap((k) => [translate("zh", k), translate("en", k)]).join(" ");
 import { openTextFile, saveTextFile, log, setWelcomeWindow, isTauri } from "./lib/platform";
@@ -536,12 +537,20 @@ function TopBar({ onTools, onSavePreset }: { onTools: () => void; onSavePreset: 
   void live.tick;
   return (
     <header className="flex h-11 shrink-0 items-center gap-1 border-b border-border bg-card px-2 text-card-foreground">
-      <span data-app-mode={session?.mode ?? "prep"} className="mr-2 shrink-0 whitespace-nowrap text-base font-semibold">
-        {session?.mode === "play" ? tr("app.title.play") : tr("app.title.prep")}
-      </span>
-      <div className="flex-1" />
+      <div data-app-mode={session?.mode ?? "prep"} className="mr-2 flex min-w-0 flex-1 items-center gap-2">
+        <span
+          data-project-title
+          className="truncate text-base font-semibold"
+          title={session ? `${session.name}\n${session.projectPath}` : undefined}
+        >
+          {session?.name || "EasyKeeper"}
+        </span>
+        <span className="shrink-0 whitespace-nowrap rounded border border-border bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+          {session?.mode === "play" ? tr("app.mode.play") : tr("app.mode.prep")}
+        </span>
+      </div>
       {session?.mode === "play" && (
-        <label className="mr-2 flex items-center gap-1.5 whitespace-nowrap text-sm">
+        <label className="mr-2 flex shrink-0 items-center gap-1.5 whitespace-nowrap text-sm">
           <span>{tr("edit.scenario")}</span>
           <Switch
             size="sm"
@@ -673,6 +682,7 @@ function applyDocSettings(doc: Document) {
   html.lang = s.locale === "zh" ? "zh-CN" : "en";
   html.style.fontSize = `${16 * s.fontScale}px`;
   html.style.setProperty("--ek-font-scale", String(s.fontScale));
+  html.dataset.diceMuted = String(s.diceMuted);
   doc.body.classList.add("bg-background", "text-foreground");
   if (doc !== document) {
     const want = (s.theme === "dark" ? themeAbyss : themeLight).className;
@@ -733,8 +743,10 @@ function installGlobalHooks() {
 }
 
 installGlobalHooks();
+installMenuBridge();
 
 function DesktopApp() {
+  const session = useStore(sessionStore);
   const ws = useStore(workspacesStore);
   const { focusMode } = useStore(chromeStore);
   const { theme } = useStore(settingsStore);
@@ -752,7 +764,7 @@ function DesktopApp() {
           </button>
         )}
       </main>
-      {!focusMode && <StatusBar />}
+      {!focusMode && session?.mode === "prep" && <StatusBar />}
       <CommandPalette />
       <ToolManager open={toolsOpen} onOpenChange={setToolsOpen} />
       <SavePresetDialog open={presetOpen} onOpenChange={setPresetOpen} />
@@ -767,15 +779,12 @@ export default function App() {
 
 function WorkspaceApp() {
   const session = useStore(sessionStore);
-  const { theme, locale } = useStore(settingsStore);
+  const action = useStore(projectActionStore);
+  const { theme } = useStore(settingsStore);
   const welcome = session == null;
   useEffect(() => {
     void setWelcomeWindow(welcome);
   }, [welcome]);
-  useEffect(() => {
-    if (!isTauri) return;
-    void invoke("set_close_project_label", { text: t("file.closeProject") });
-  }, [locale]);
   useEffect(() => {
     if (!isTauri) return;
     let stop: (() => void) | undefined;
@@ -807,5 +816,8 @@ function WorkspaceApp() {
       </>
     );
   }
-  return <DesktopApp />;
+  return <>
+    <DesktopApp />
+    {action && <div role="dialog" aria-modal="true" aria-label={t("welcome.start")} className="fixed inset-0 z-[70] overflow-auto bg-background"><WelcomePage /></div>}
+  </>;
 }

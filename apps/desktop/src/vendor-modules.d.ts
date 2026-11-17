@@ -1,5 +1,6 @@
 /** Injected by Vite from the installed dockview-react package. */
 declare const __DOCKVIEW_VERSION__: string;
+declare const __APP_VERSION__: string;
 
 declare module "*dice-box-threejs.es.js" {
   const DiceBox: new (el: string | HTMLElement, opts?: Record<string, unknown>) => {

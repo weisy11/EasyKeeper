@@ -4,7 +4,7 @@ export type ProjectKind = "scenario" | "gameRecord";
 
 export type EzkpManifest =
   | { kind: "scenario"; name: string; version: 1 }
-  | { kind: "gameRecord"; name: string; version: 1; modulePath: string };
+  | { kind: "gameRecord"; name: string; version: 1; modulePath: string | null };
 
 export type SessionContext = {
   mode: AppMode;

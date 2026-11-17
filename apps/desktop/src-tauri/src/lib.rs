@@ -1,4 +1,5 @@
 mod app_db;
+mod app_menu;
 mod blocking;
 mod copilot;
 mod copilot_chats;
@@ -19,7 +20,6 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID};
 use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
@@ -495,129 +495,6 @@ fn place_project(app: &AppHandle, window: &tauri::WebviewWindow) {
   }
 }
 
-const CLOSE_PROJECT_ID: &str = "close-project";
-
-fn close_project_item(app: &AppHandle) -> Option<MenuItem<tauri::Wry>> {
-  let menu = app.menu()?;
-  let items = menu.items().ok()?;
-  for item in items {
-    let Some(submenu) = item.as_submenu() else { continue };
-    let Some(kind) = submenu.get(CLOSE_PROJECT_ID) else { continue };
-    if let Some(entry) = kind.as_menuitem() {
-      return Some(entry.clone());
-    }
-  }
-  None
-}
-
-fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
-  let pkg = app.package_info();
-  let config = app.config();
-  let about = AboutMetadata {
-    name: Some(pkg.name.clone()),
-    version: Some(pkg.version.to_string()),
-    copyright: config.bundle.copyright.clone(),
-    authors: config.bundle.publisher.clone().map(|publisher| vec![publisher]),
-    ..Default::default()
-  };
-  let project_open = app.state::<LaunchMemory>().is_open();
-  let close_project = MenuItem::with_id(app, CLOSE_PROJECT_ID, "关闭项目", project_open, None::<&str>)?;
-  let window_menu = Submenu::with_id_and_items(
-    app,
-    WINDOW_SUBMENU_ID,
-    "Window",
-    true,
-    &[
-      &PredefinedMenuItem::minimize(app, None)?,
-      &PredefinedMenuItem::maximize(app, None)?,
-      #[cfg(target_os = "macos")]
-      &PredefinedMenuItem::separator(app)?,
-      &PredefinedMenuItem::close_window(app, None)?,
-    ],
-  )?;
-  let help_menu = Submenu::with_id_and_items(
-    app,
-    HELP_SUBMENU_ID,
-    "Help",
-    true,
-    &[
-      #[cfg(not(target_os = "macos"))]
-      &PredefinedMenuItem::about(app, None, Some(about.clone()))?,
-    ],
-  )?;
-  let menu = Menu::with_items(
-    app,
-    &[
-      #[cfg(target_os = "macos")]
-      &Submenu::with_items(
-        app,
-        pkg.name.clone(),
-        true,
-        &[
-          &PredefinedMenuItem::about(app, None, Some(about))?,
-          &PredefinedMenuItem::separator(app)?,
-          &PredefinedMenuItem::services(app, None)?,
-          &PredefinedMenuItem::separator(app)?,
-          &PredefinedMenuItem::hide(app, None)?,
-          &PredefinedMenuItem::hide_others(app, None)?,
-          &PredefinedMenuItem::separator(app)?,
-          // The predefined item calls `terminate:` directly, which skips the flush. Route Cmd+Q through our handler.
-          &MenuItem::with_id(app, QUIT_ID, format!("Quit {}", pkg.name), true, Some("CmdOrCtrl+Q"))?,
-        ],
-      )?,
-      #[cfg(not(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd")))]
-      &Submenu::with_items(
-        app,
-        "File",
-        true,
-        &[
-          &close_project,
-          &PredefinedMenuItem::separator(app)?,
-          &PredefinedMenuItem::close_window(app, None)?,
-          #[cfg(not(target_os = "macos"))]
-          &PredefinedMenuItem::quit(app, None)?,
-        ],
-      )?,
-      #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
-      &Submenu::with_items(app, "File", true, &[&close_project])?,
-      &Submenu::with_items(
-        app,
-        "Edit",
-        true,
-        &[
-          &PredefinedMenuItem::undo(app, None)?,
-          &PredefinedMenuItem::redo(app, None)?,
-          &PredefinedMenuItem::separator(app)?,
-          &PredefinedMenuItem::cut(app, None)?,
-          &PredefinedMenuItem::copy(app, None)?,
-          &PredefinedMenuItem::paste(app, None)?,
-          &PredefinedMenuItem::select_all(app, None)?,
-        ],
-      )?,
-      #[cfg(target_os = "macos")]
-      &Submenu::with_items(app, "View", true, &[&PredefinedMenuItem::fullscreen(app, None)?])?,
-      &window_menu,
-      &help_menu,
-    ],
-  )?;
-  app.set_menu(menu)?;
-  app.on_menu_event(|app, event| {
-    if event.id() == CLOSE_PROJECT_ID {
-      let _ = app.emit("ek:close-project", ());
-    } else if event.id() == QUIT_ID && start_close_flush(app, true) {
-      app.exit(0);
-    }
-  });
-  Ok(())
-}
-
-#[tauri::command]
-fn set_close_project_label(app: AppHandle, text: String) {
-  if let Some(item) = close_project_item(&app) {
-    let _ = item.set_text(text);
-  }
-}
-
 #[tauri::command]
 fn close_project_connections(paths: Vec<String>) {
   project_db::close_connections(&paths);
@@ -681,6 +558,7 @@ pub fn run() {
     .manage(CloseFlush { flushed: AtomicBool::new(false), quit: AtomicBool::new(false) })
     .manage(GeometryWriter(AtomicUsize::new(0)))
     .manage(LaunchMemory::default())
+    .manage(app_menu::MenuContext::default())
     .invoke_handler(tauri::generate_handler![
       log_line,
       queue_popout,
@@ -728,13 +606,20 @@ pub fn run() {
       set_welcome_window,
       session_set,
       session_get,
-      set_close_project_label,
+      app_menu::update_app_menu,
+      app_menu::open_utility,
+      app_menu::set_utility_save_enabled,
       close_project_connections,
       close_popout_windows,
       finish_app_close
     ])
+    .on_window_event(|window, event| {
+      if matches!(event, WindowEvent::Focused(true)) {
+        app_menu::update_save_enabled(window.app_handle());
+      }
+    })
     .setup(move |app| {
-      install_app_menu(app.handle())?;
+      app_menu::install(app.handle())?;
       let handle = app.handle().clone();
       let saved = geometry::load_main(app.handle());
       let mut main_builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -837,7 +722,7 @@ pub fn run() {
           }
           record_main_geometry(&h3, true);
           for (label, w) in h3.webview_windows() {
-            if label.starts_with("popout-") {
+            if label.starts_with("popout-") || label.starts_with("utility-") {
               let _ = w.destroy();
             }
           }

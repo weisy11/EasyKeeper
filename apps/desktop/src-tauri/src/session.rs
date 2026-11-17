@@ -21,12 +21,6 @@ pub struct LaunchMemory {
   session: Mutex<Option<OpenSession>>,
 }
 
-impl LaunchMemory {
-  pub fn is_open(&self) -> bool {
-    self.session.lock().map(|slot| slot.is_some()).unwrap_or(false)
-  }
-}
-
 pub fn session_if_present(slot: &mut Option<OpenSession>) -> Option<OpenSession> {
   if slot.as_ref().is_some_and(|session| !Path::new(&session.project_path).is_dir()) {
     *slot = None;

@@ -11,7 +11,10 @@ const dockviewVersion: string = require("dockview-react/package.json").version;
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  define: { __DOCKVIEW_VERSION__: JSON.stringify(dockviewVersion) },
+  define: { __DOCKVIEW_VERSION__: JSON.stringify(dockviewVersion), __APP_VERSION__: JSON.stringify(require("./package.json").version) },
+  build: {
+    rollupOptions: { input: { main: path.resolve(import.meta.dirname, "index.html"), utility: path.resolve(import.meta.dirname, "utility.html") } },
+  },
   resolve: {
     alias: { "@": path.resolve(import.meta.dirname, "./src") },
   },
