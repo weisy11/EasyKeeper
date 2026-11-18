@@ -1,5 +1,7 @@
 [简体中文](README_zh.md) | English
 
+<img src="./docs/images/logo.png" alt="EasyKeeper Logo" width="128" />
+
 ## EasyKeeper
 
 A tabletop RPG toolbox designed for CoC Keepers — open source, free, and connects to any AI service.

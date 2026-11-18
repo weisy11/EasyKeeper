@@ -27,7 +27,8 @@ function Settings() {
 function About() {
   const { locale } = useStore(settingsStore);
   const en = locale === "en";
-  return <main className="flex h-screen flex-col items-center justify-center gap-3 overflow-auto p-6 text-center">
+  return <main className="flex min-h-screen flex-col items-center justify-center gap-3 p-6 text-center">
+    <img src="/logo.png" alt={en ? "EasyKeeper Logo" : "EasyKeeper 标志"} width={96} height={96} className="h-24 w-24 shrink-0 object-contain" />
     <h1 className="text-2xl font-semibold">EasyKeeper</h1>
     <p className="text-sm text-muted-foreground">{en ? "Version" : "版本"} {__APP_VERSION__}</p>
     <p>{en ? "A toolbox for preparing and running tabletop games" : "为备团和跑团设计的工具箱"}</p>

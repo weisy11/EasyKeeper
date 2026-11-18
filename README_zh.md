@@ -1,5 +1,7 @@
 简体中文 | [English](README_en.md)
 
+<img src="./docs/images/logo.png" alt="EasyKeeper 标志" width="128" />
+
 ## EasyKeeper
 
 为 CoC Keeper 设计的跑团工具箱，开源、免费，支持 AI 能力接入。
